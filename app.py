@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import requests
+import sqlite3
 from datetime import datetime, date
 
 # ==========================================================
@@ -19,10 +20,156 @@ st.write(
 )
 
 # ==========================================================
-# SESSION STATE
+# DATABASE
 # ==========================================================
-if "transactions" not in st.session_state:
-    st.session_state.transactions = []
+def init_db():
+
+    conn = sqlite3.connect(
+        "portfolio.db"
+    )
+
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS investments (
+
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+            user_id INTEGER,
+
+            date TEXT,
+
+            fund_type TEXT,
+
+            fund_name TEXT,
+
+            amount REAL,
+
+            purchase_nav REAL,
+
+            nav_date TEXT,
+
+            latest_nav REAL,
+
+            units REAL,
+
+            current_value REAL,
+
+            gain_loss REAL,
+
+            holding_years REAL,
+
+            cagr REAL
+        )
+        """
+    )
+
+    conn.commit()
+    conn.close()
+
+
+init_db()
+
+def load_portfolio(user_id=1):
+
+    conn = sqlite3.connect(
+        "portfolio.db"
+    )
+
+    query = """
+    SELECT
+
+        date AS "Date",
+        fund_type AS "Fund Type",
+        fund_name AS "Fund Name",
+        amount AS "Amount",
+        purchase_nav AS "Purchase NAV",
+        nav_date AS "NAV Date",
+        latest_nav AS "Latest NAV",
+        units AS "Units",
+        current_value AS "Current Value",
+        gain_loss AS "Gain/Loss",
+        holding_years AS "Holding Years",
+        cagr AS "CAGR %"
+
+    FROM investments
+    WHERE user_id = ?
+    """
+
+    portfolio_df = pd.read_sql_query(
+        query,
+        conn,
+        params=(user_id,)
+    )
+
+    conn.close()
+
+    return portfolio_df
+
+def save_investment(
+    user_id,
+    date,
+    fund_type,
+    fund_name,
+    amount,
+    purchase_nav,
+    nav_date,
+    latest_nav,
+    units,
+    current_value,
+    gain_loss,
+    holding_years,
+    cagr
+):
+
+    conn = sqlite3.connect(
+        "portfolio.db"
+    )
+
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        INSERT INTO investments (
+
+            user_id,
+            date,
+            fund_type,
+            fund_name,
+            amount,
+            purchase_nav,
+            nav_date,
+            latest_nav,
+            units,
+            current_value,
+            gain_loss,
+            holding_years,
+            cagr
+
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+
+        (
+            user_id,
+            date,
+            fund_type,
+            fund_name,
+            amount,
+            purchase_nav,
+            nav_date,
+            latest_nav,
+            units,
+            current_value,
+            gain_loss,
+            holding_years,
+            cagr
+        )
+    )
+
+    conn.commit()
+    conn.close()
 
 # ==========================================================
 # LOAD MUTUAL FUNDS
@@ -274,67 +421,50 @@ if st.button("Add Investment"):
             - 1
         ) * 100
 
-        st.session_state.transactions.append({
-
-            "Date":
-            investment_date.strftime(
+        save_investment(
+            user_id=1,
+            date=investment_date.strftime(
                 "%d/%B/%Y"
             ),
-
-            "Fund Type":
-            mf_type,
-
-            "Fund Name":
-            fund_name,
-
-            "Amount":
-            investment_amount,
-
-            "Purchase NAV":
-            round(
+            fund_type=mf_type,
+            fund_name=fund_name,
+            amount=investment_amount,
+            purchase_nav=round(
                 purchase_nav,
                 2
             ),
-
-            "NAV Date":
-            nav_date_used,
-
-            "Latest NAV":
-            round(
+            
+            nav_date=nav_date_used,
+            latest_nav=round(
                 latest_nav,
                 2
             ),
-
-            "Units":
-            round(
+            
+            units=round(
                 units,
                 4
             ),
-
-            "Current Value":
-            round(
+            
+            current_value=round(
                 current_value,
                 2
             ),
 
-            "Gain/Loss":
-            round(
+            gain_loss=round(
                 gain,
                 2
             ),
-
-            "Holding Years":
-            round(
+            
+            holding_years=round(
                 holding_years,
                 2
             ),
-
-            "CAGR %":
-            round(
+            
+            cagr=round(
                 cagr,
                 2
             )
-        })
+        )
 
         st.success(
             "Investment added successfully"
@@ -349,11 +479,9 @@ if st.button("Add Investment"):
 # ==========================================================
 # PORTFOLIO
 # ==========================================================
-if st.session_state.transactions:
+portfolio_df = load_portfolio(user_id=1)
 
-    portfolio_df = pd.DataFrame(
-        st.session_state.transactions
-    )
+if not portfolio_df.empty:
 
     st.divider()
 
