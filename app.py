@@ -301,7 +301,29 @@ def save_investment(
     cursor.close()
     conn.close()
 
+# ==========================================================
+# DELETE INVESTMENT
+# ==========================================================
+def delete_investment(investment_id):
 
+    conn = get_connection()
+
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        DELETE FROM investments
+        WHERE id = %s
+        """,
+        (investment_id,)
+    )
+
+    conn.commit()
+
+    cursor.close()
+    conn.close()
+
+    
 # ==========================================================
 # LOAD PORTFOLIO
 # ==========================================================
@@ -315,6 +337,7 @@ def load_portfolio(user_id=1):
         """
         SELECT
 
+            id,
             date,
             fund_type,
             fund_name,
@@ -341,6 +364,7 @@ def load_portfolio(user_id=1):
     conn.close()
 
     columns = [
+        "ID",
         "Date",
         "Fund Type",
         "Fund Name",
@@ -670,10 +694,34 @@ if not portfolio_df.empty:
                     )
 
                     st.dataframe(
-                        fund_df_detail,
+                        fund_df_detail.drop(
+                            columns=["ID"]
+                        ),
                         use_container_width=True,
                         hide_index=True
                     )
+
+                    selected_id = st.selectbox(
+                        "Select investment to delete",
+                            fund_df_detail["ID"],
+                            key=f"delete_{fund}"
+                    )
+
+                    if st.button(
+                        f"🗑 Delete Investment",
+                        key=f"btn_{fund}"
+                    ):
+                        delete_investment(
+                            selected_id
+                        )
+
+                        st.success(
+                             "Investment deleted successfully"
+                        )
+
+                        st.rerun()
+                    
+
 
     st.markdown("---")
 
