@@ -11,7 +11,7 @@ from datetime import datetime, date
 st.set_page_config(
     page_title="Mutual Fund Portfolio Analyzer",
     page_icon="📈",
-    layout="wide"
+    layout="centered"
 )
 
 st.title("📈 Mutual Fund Portfolio Analyzer")
