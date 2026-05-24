@@ -1,7 +1,8 @@
 import streamlit as st
 import pandas as pd
 import requests
-import sqlite3
+import psycopg2
+import os
 from datetime import datetime, date
 
 # ==========================================================
@@ -20,13 +21,21 @@ st.write(
 )
 
 # ==========================================================
-# DATABASE
+# SUPABASE DATABASE
 # ==========================================================
+DATABASE_URL = st.secrets["DATABASE_URL"]
+
+
+def get_connection():
+
+    return psycopg2.connect(
+        DATABASE_URL
+    )
+
+
 def init_db():
 
-    conn = sqlite3.connect(
-        "portfolio.db"
-    )
+    conn = get_connection()
 
     cursor = conn.cursor()
 
@@ -34,9 +43,9 @@ def init_db():
         """
         CREATE TABLE IF NOT EXISTS investments (
 
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id BIGSERIAL PRIMARY KEY,
 
-            user_id INTEGER,
+            user_id INTEGER DEFAULT 1,
 
             date TEXT,
 
@@ -44,132 +53,36 @@ def init_db():
 
             fund_name TEXT,
 
-            amount REAL,
+            amount DOUBLE PRECISION,
 
-            purchase_nav REAL,
+            purchase_nav DOUBLE PRECISION,
 
             nav_date TEXT,
 
-            latest_nav REAL,
+            latest_nav DOUBLE PRECISION,
 
-            units REAL,
+            units DOUBLE PRECISION,
 
-            current_value REAL,
+            current_value DOUBLE PRECISION,
 
-            gain_loss REAL,
+            gain_loss DOUBLE PRECISION,
 
-            holding_years REAL,
+            holding_years DOUBLE PRECISION,
 
-            cagr REAL
+            cagr DOUBLE PRECISION,
+
+            created_at TIMESTAMP
+            DEFAULT NOW()
         )
         """
     )
 
     conn.commit()
+    cursor.close()
     conn.close()
 
 
 init_db()
-
-def load_portfolio(user_id=1):
-
-    conn = sqlite3.connect(
-        "portfolio.db"
-    )
-
-    query = """
-    SELECT
-
-        date AS "Date",
-        fund_type AS "Fund Type",
-        fund_name AS "Fund Name",
-        amount AS "Amount",
-        purchase_nav AS "Purchase NAV",
-        nav_date AS "NAV Date",
-        latest_nav AS "Latest NAV",
-        units AS "Units",
-        current_value AS "Current Value",
-        gain_loss AS "Gain/Loss",
-        holding_years AS "Holding Years",
-        cagr AS "CAGR %"
-
-    FROM investments
-    WHERE user_id = ?
-    """
-
-    portfolio_df = pd.read_sql_query(
-        query,
-        conn,
-        params=(user_id,)
-    )
-
-    conn.close()
-
-    return portfolio_df
-
-def save_investment(
-    user_id,
-    date,
-    fund_type,
-    fund_name,
-    amount,
-    purchase_nav,
-    nav_date,
-    latest_nav,
-    units,
-    current_value,
-    gain_loss,
-    holding_years,
-    cagr
-):
-
-    conn = sqlite3.connect(
-        "portfolio.db"
-    )
-
-    cursor = conn.cursor()
-
-    cursor.execute(
-        """
-        INSERT INTO investments (
-
-            user_id,
-            date,
-            fund_type,
-            fund_name,
-            amount,
-            purchase_nav,
-            nav_date,
-            latest_nav,
-            units,
-            current_value,
-            gain_loss,
-            holding_years,
-            cagr
-
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-
-        (
-            user_id,
-            date,
-            fund_type,
-            fund_name,
-            amount,
-            purchase_nav,
-            nav_date,
-            latest_nav,
-            units,
-            current_value,
-            gain_loss,
-            holding_years,
-            cagr
-        )
-    )
-
-    conn.commit()
-    conn.close()
 
 # ==========================================================
 # LOAD MUTUAL FUNDS
@@ -314,6 +227,141 @@ def get_nav_data(
     )
 
 # ==========================================================
+# SAVE INVESTMENT
+# ==========================================================
+def save_investment(
+    user_id,
+    date,
+    fund_type,
+    fund_name,
+    amount,
+    purchase_nav,
+    nav_date,
+    latest_nav,
+    units,
+    current_value,
+    gain_loss,
+    holding_years,
+    cagr
+):
+
+    conn = get_connection()
+
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        INSERT INTO investments (
+
+            user_id,
+            date,
+            fund_type,
+            fund_name,
+            amount,
+            purchase_nav,
+            nav_date,
+            latest_nav,
+            units,
+            current_value,
+            gain_loss,
+            holding_years,
+            cagr
+
+        )
+
+        VALUES (
+
+            %s, %s, %s, %s,
+            %s, %s, %s, %s,
+            %s, %s, %s, %s,
+            %s
+        )
+        """,
+
+        (
+            user_id,
+            date,
+            fund_type,
+            fund_name,
+            amount,
+            purchase_nav,
+            nav_date,
+            latest_nav,
+            units,
+            current_value,
+            gain_loss,
+            holding_years,
+            cagr
+        )
+    )
+
+    conn.commit()
+
+    cursor.close()
+    conn.close()
+
+
+# ==========================================================
+# LOAD PORTFOLIO
+# ==========================================================
+def load_portfolio(user_id=1):
+
+    conn = get_connection()
+
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        SELECT
+
+            date,
+            fund_type,
+            fund_name,
+            amount,
+            purchase_nav,
+            nav_date,
+            latest_nav,
+            units,
+            current_value,
+            gain_loss,
+            holding_years,
+            cagr
+
+        FROM investments
+
+        WHERE user_id = %s
+        """,
+        (user_id,)
+    )
+
+    rows = cursor.fetchall()
+
+    cursor.close()
+    conn.close()
+
+    columns = [
+        "Date",
+        "Fund Type",
+        "Fund Name",
+        "Amount",
+        "Purchase NAV",
+        "NAV Date",
+        "Latest NAV",
+        "Units",
+        "Current Value",
+        "Gain/Loss",
+        "Holding Years",
+        "CAGR %"
+    ]
+
+    portfolio_df = pd.DataFrame(
+        rows,
+        columns=columns
+    )
+
+    return portfolio_df
+
+# ==========================================================
 # INPUT SECTION
 # ==========================================================
 st.subheader(
@@ -376,8 +424,9 @@ if st.button("Add Investment"):
         ]
 
         invest_date_str = (
-            investment_date
-            .strftime("%d/%m/%Y")
+            investment_date.strftime(
+                "%d/%m/%Y"
+            )
         )
 
         (
@@ -417,34 +466,43 @@ if st.button("Add Investment"):
                 current_value
                 / investment_amount
             )
-            ** (1 / holding_years)
+            ** (
+                1 / holding_years
+            )
             - 1
         ) * 100
 
         save_investment(
+
             user_id=1,
+
             date=investment_date.strftime(
                 "%d/%B/%Y"
             ),
+
             fund_type=mf_type,
+
             fund_name=fund_name,
+
             amount=investment_amount,
+
             purchase_nav=round(
                 purchase_nav,
                 2
             ),
-            
+
             nav_date=nav_date_used,
+
             latest_nav=round(
                 latest_nav,
                 2
             ),
-            
+
             units=round(
                 units,
                 4
             ),
-            
+
             current_value=round(
                 current_value,
                 2
@@ -454,12 +512,12 @@ if st.button("Add Investment"):
                 gain,
                 2
             ),
-            
+
             holding_years=round(
                 holding_years,
                 2
             ),
-            
+
             cagr=round(
                 cagr,
                 2
@@ -477,61 +535,60 @@ if st.button("Add Investment"):
         )
 
 # ==========================================================
-# PORTFOLIO
+# PORTFOLIO SUMMARY
 # ==========================================================
-portfolio_df = load_portfolio(user_id=1)
+st.markdown("---")
+
+st.header(
+    "Portfolio Summary"
+)
+
+# Load saved investments
+portfolio_df = load_portfolio(
+    user_id=1
+)
 
 if not portfolio_df.empty:
 
-    st.divider()
-
-    st.header(
-        "Portfolio Summary"
+    total_invested = (
+        portfolio_df["Amount"]
+        .sum()
     )
 
-    # ======================================================
-    # TYPE SUMMARY
-    # ======================================================
+    total_current_value = (
+        portfolio_df["Current Value"]
+        .sum()
+    )
+
+    total_gain_loss = (
+        portfolio_df["Gain/Loss"]
+        .sum()
+    )
+
     st.subheader(
         "Mutual Fund Type Summary"
     )
 
     type_summary = (
         portfolio_df
-        .groupby("Fund Type")
+        .groupby(
+            "Fund Type",
+            as_index=False
+        )
         .agg({
             "Amount": "sum",
             "Current Value": "sum",
             "Gain/Loss": "sum"
         })
-        .reset_index()
-    )
-
-    total_portfolio = (
-        type_summary[
-            "Amount"
-        ].sum()
     )
 
     type_summary[
         "Allocation %"
     ] = (
-        type_summary[
-            "Amount"
-        ]
-        / total_portfolio
+        type_summary["Amount"]
+        / total_invested
         * 100
     ).round(2)
-
-    type_summary = type_summary[
-        [
-            "Fund Type",
-            "Amount",
-            "Allocation %",
-            "Current Value",
-            "Gain/Loss"
-        ]
-    ]
 
     st.dataframe(
         type_summary,
@@ -539,60 +596,38 @@ if not portfolio_df.empty:
         hide_index=True
     )
 
-    # ======================================================
-    # FUND DETAILS
-    # ======================================================
-    fund_type_order = [
-        "Large Cap",
-        "Flexi Cap",
-        "Mid Cap",
-        "Small Cap",
-        "Hybrid",
-        "Debt",
-        "ELSS",
-        "Index Fund",
-        "Sectoral/Thematic"
-    ]
-
-    available_types = [
-        ft for ft in fund_type_order
-        if ft in portfolio_df[
+    for ft in (
+        portfolio_df[
             "Fund Type"
         ].unique()
-    ]
-
-    for fund_type in available_types:
-
-        type_df = portfolio_df[
-            portfolio_df[
-                "Fund Type"
-            ]
-            == fund_type
-        ]
+    ):
 
         with st.expander(
-            f"{fund_type}",
-            expanded=False
+            ft
         ):
 
-            st.markdown(
-                "### Fund Summary"
+            type_df = (
+                portfolio_df[
+                    portfolio_df[
+                        "Fund Type"
+                    ] == ft
+                ]
             )
 
             fund_summary = (
                 type_df
                 .groupby(
-                    "Fund Name"
+                    "Fund Name",
+                    as_index=False
                 )
                 .agg({
                     "Amount": "sum",
                     "Current Value": "sum",
                     "Gain/Loss": "sum"
                 })
-                .reset_index()
             )
 
-            total_type_amount = (
+            type_total = (
                 fund_summary[
                     "Amount"
                 ].sum()
@@ -604,19 +639,9 @@ if not portfolio_df.empty:
                 fund_summary[
                     "Amount"
                 ]
-                / total_type_amount
+                / type_total
                 * 100
             ).round(2)
-
-            fund_summary = fund_summary[
-                [
-                    "Fund Name",
-                    "Amount",
-                    "Allocation %",
-                    "Current Value",
-                    "Gain/Loss"
-                ]
-            ]
 
             st.dataframe(
                 fund_summary,
@@ -624,7 +649,6 @@ if not portfolio_df.empty:
                 hide_index=True
             )
 
-            # Transactions
             for fund in (
                 type_df[
                     "Fund Name"
@@ -636,53 +660,21 @@ if not portfolio_df.empty:
                     expanded=False
                 ):
 
-                    fund_transactions = (
+                    fund_df_detail = (
                         type_df[
                             type_df[
                                 "Fund Name"
-                            ]
-                            == fund
+                            ] == fund
                         ]
                     )
 
-                    fund_transactions = (
-                        fund_transactions
-                        .drop(
-                            columns=[
-                                "Fund Type",
-                                "Fund Name"
-                            ]
-                        )
-                    )
-
                     st.dataframe(
-                        fund_transactions,
+                        fund_df_detail,
                         use_container_width=True,
                         hide_index=True
                     )
 
-    # ======================================================
-    # OVERALL SUMMARY
-    # ======================================================
-    st.divider()
-
-    total_invested = (
-        portfolio_df[
-            "Amount"
-        ].sum()
-    )
-
-    total_current = (
-        portfolio_df[
-            "Current Value"
-        ].sum()
-    )
-
-    total_gain = (
-        portfolio_df[
-            "Gain/Loss"
-        ].sum()
-    )
+    st.markdown("---")
 
     col1, col2, col3 = st.columns(3)
 
@@ -693,12 +685,12 @@ if not portfolio_df.empty:
 
     col2.metric(
         "Current Value",
-        f"₹{total_current:,.2f}"
+        f"₹{total_current_value:,.2f}"
     )
 
     col3.metric(
         "Gain/Loss",
-        f"₹{total_gain:,.2f}"
+        f"₹{total_gain_loss:,.2f}"
     )
 
 else:
