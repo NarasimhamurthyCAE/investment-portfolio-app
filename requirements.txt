@@ -4,3 +4,8 @@ requests
 psycopg2-binary
 matplotlib
 pyxirr
+beautifulsoup4
+lxml
+openpyxl
+numpy
+plotly

@@ -6,6 +6,9 @@ import os
 import matplotlib.pyplot as plt
 from datetime import datetime, date
 from pyxirr import xirr
+import numpy as np
+from bs4 import BeautifulSoup
+import io
 
 # ==========================================================
 # PAGE CONFIG
@@ -96,9 +99,29 @@ def load_mutual_funds():
     url = "https://api.mfapi.in/mf"
 
     response = requests.get(url)
+
     data = response.json()
 
     df = pd.DataFrame(data)
+
+    # ======================================
+    # MANUALLY ADD MISSING FUNDS
+    # ======================================
+
+    manual_funds = pd.DataFrame([
+
+        {
+            "schemeCode": 150518,
+            "schemeName":
+            "Motilal Oswal BSE Enhanced Value Index Fund Direct Growth"
+        }
+
+    ])
+
+    df = pd.concat(
+        [df, manual_funds],
+        ignore_index=True
+    )
 
     df.rename(
         columns={
@@ -108,25 +131,58 @@ def load_mutual_funds():
         inplace=True
     )
 
-    # Filter Direct Growth only
+    # ======================================
+    # CLEAN TEXT
+    # ======================================
     df["UPPER"] = (
         df["Fund Name"]
+        .astype(str)
         .str.upper()
+        .str.strip()
     )
 
-    include = (
-        df["UPPER"].str.contains(
+    # ======================================
+    # INCLUDE DIRECT
+    # ======================================
+    direct_filter = (
+        df["UPPER"]
+        .str.contains(
             "DIRECT",
             na=False
         )
-        &
-        df["UPPER"].str.contains(
-            "GROWTH",
-            na=False
-        )
     )
 
+    # ======================================
+    # INCLUDE GROWTH
+    # More flexible filter
+    # ======================================
+    growth_keywords = [
+
+        "GROWTH",
+        "GROWTH OPTION",
+        "DIRECT GROWTH",
+        "DIR GROWTH",
+        "GROWTH PLAN",
+        "PLAN GROWTH"
+    ]
+
+    growth_filter = False
+
+    for word in growth_keywords:
+
+        growth_filter |= (
+            df["UPPER"]
+            .str.contains(
+                word,
+                na=False
+            )
+        )
+
+    # ======================================
+    # EXCLUDE NON-GROWTH
+    # ======================================
     exclude_words = [
+
         "IDCW",
         "DIVIDEND",
         "BONUS",
@@ -143,6 +199,7 @@ def load_mutual_funds():
     exclude = False
 
     for word in exclude_words:
+
         exclude |= (
             df["UPPER"]
             .str.contains(
@@ -151,24 +208,38 @@ def load_mutual_funds():
             )
         )
 
+    # ======================================
+    # FINAL FILTER
+    # ======================================
     df = df[
-        include
+        direct_filter
+        &
+        growth_filter
         &
         ~exclude
     ]
 
-    df = df.sort_values(
-        "Fund Name"
-    )
-
-    df = df.reset_index(
-        drop=True
+    # ======================================
+    # REMOVE DUPLICATES
+    # ======================================
+    df = (
+        df
+        .drop_duplicates(
+            subset="Fund Name"
+        )
+        .sort_values(
+            "Fund Name"
+        )
+        .reset_index(
+            drop=True
+        )
     )
 
     return df
 
 
 fund_df = load_mutual_funds()
+
 
 # ==========================================================
 # NAV FUNCTION
@@ -697,6 +768,391 @@ def calculate_fund_xirr(fund_df):
 
         return None
 
+
+# ======================================================
+# HOLDINGS LAST UPDATE
+# ======================================================
+FUND_HOLDINGS_DATE = {
+
+    "AXIS SMALL CAP":
+        "May 2026",
+
+    "BANDHAN":
+        "May 2026",
+
+    "HDFC FLEXI":
+        "April 2026",
+
+    "PARAG":
+        "30/04/2026"
+}
+
+# ======================================
+# GENERIC FUND EXCEL LOADER
+# ======================================
+
+def load_fund_excel(file_path):
+
+    try:
+
+        # Read Excel
+        df = pd.read_excel(file_path)
+
+        # Clean column names
+        df.columns = (
+            df.columns
+            .astype(str)
+            .str.strip()
+        )
+
+        # Keep required columns
+        df = df[
+            [
+                "Stock",
+                "Industry",
+                "Weight"
+            ]
+        ].copy()
+
+        # Remove blank rows
+        df = df[
+            df["Stock"].notna()
+        ]
+
+        # Clean text
+        df["Stock"] = (
+            df["Stock"]
+            .astype(str)
+            .str.strip()
+        )
+
+        df["Industry"] = (
+            df["Industry"]
+            .astype(str)
+            .str.strip()
+        )
+
+        # ======================================
+        # FIX WEIGHT FORMAT
+        # ======================================
+
+        # Convert weight to numeric
+        df["Weight"] = pd.to_numeric(
+
+            df["Weight"],
+
+            errors="coerce"
+        )
+
+        # Remove invalid rows
+        df = df[
+            df["Weight"].notna()
+        ]
+
+        # Clean rounding
+        df["Weight"] = (
+            df["Weight"]
+            .round(2)
+        )
+
+        return (
+            df[
+                [
+                    "Stock",
+                    "Industry",
+                    "Weight"
+                ]
+            ]
+            .reset_index(drop=True)
+        )
+
+    except Exception as e:
+
+        st.error(
+            f"Excel loading failed: {e}"
+        )
+
+        return pd.DataFrame()
+
+# ======================================
+# CLEAN STOCK NAMES
+# ======================================
+def normalize_stock_name(name):
+
+    if pd.isna(name):
+        return ""
+
+    name = str(name).upper().strip()
+
+    # remove common suffixes
+    replacements = {
+
+        " LIMITED": "",
+        " LTD.": "",
+        " LTD": "",
+        " INC.": "",
+        " INC": "",
+        " PLC": "",
+        " CORPORATION": " CORP",
+        "&": "AND",
+
+        "(INDIA)": "INDIA",
+        "(INDIA) LIMITED": "INDIA",
+
+        " COMPANY": "",
+        " CO.": "",
+        " PRIVATE": "",
+        " PVT": "",
+
+        ",": "",
+        ".": ""
+    }
+
+    for old, new in replacements.items():
+
+        name = name.replace(
+            old,
+            new
+        )
+
+    # remove extra spaces
+    name = " ".join(
+        name.split()
+    )
+
+    return name
+
+# ==========================================================
+# FUND OVERLAP CALCULATOR
+# ==========================================================
+def calculate_fund_overlap(
+    fund1_df,
+    fund2_df
+):
+
+    try:
+
+        # ======================================
+        # EMPTY CHECK
+        # ======================================
+        if (
+            fund1_df.empty
+            or
+            fund2_df.empty
+        ):
+
+            return (
+                0,
+                pd.DataFrame()
+            )
+
+        # ======================================
+        # NORMALIZE STOCK NAMES
+        # ======================================
+
+        fund1_df = (
+            fund1_df.copy()
+        )
+
+        fund2_df = (
+            fund2_df.copy()
+        )
+
+        fund1_df[
+            "Stock_Normalized"
+        ] = (
+            fund1_df["Stock"]
+            .apply(
+                normalize_stock_name
+            )
+        )
+
+        fund2_df[
+            "Stock_Normalized"
+        ] = (
+            fund2_df["Stock"]
+            .apply(
+                normalize_stock_name
+            )
+        )
+
+        # ======================================
+        # MERGE USING NORMALIZED NAME
+        # ======================================
+
+        overlap_df = pd.merge(
+
+            fund1_df,
+
+            fund2_df,
+
+            on="Stock_Normalized",
+
+            how="outer",
+
+            suffixes=(
+                "_1",
+                "_2"
+            )
+        )
+
+        # ======================================
+        # FIX STOCK NAME DISPLAY
+        # ======================================
+
+        overlap_df["Stock"] = (
+            overlap_df["Stock_1"]
+            .fillna(
+                overlap_df["Stock_2"]
+            )
+        )
+
+
+        # ======================================
+        # FILL MISSING WEIGHTS
+        # ======================================
+        overlap_df[
+            "Weight_1"
+        ] = (
+            overlap_df[
+                "Weight_1"
+            ]
+            .fillna(0)
+        )
+
+        overlap_df[
+            "Weight_2"
+        ] = (
+            overlap_df[
+                "Weight_2"
+            ]
+            .fillna(0)
+        )
+
+        # ======================================
+        # INDUSTRY FIX
+        # ======================================
+
+        # clean text values
+        overlap_df[
+            "Industry_1"
+        ] = (
+            overlap_df[
+                "Industry_1"
+            ]
+            .astype(str)
+            .str.strip()
+        )
+
+        overlap_df[
+            "Industry_2"
+        ] = (
+            overlap_df[
+                "Industry_2"
+            ]
+            .astype(str)
+            .str.strip()
+        )
+
+        # replace bad values with NaN
+        overlap_df[
+            "Industry_1"
+        ] = overlap_df[
+            "Industry_1"
+        ].replace(
+            [
+                "None",
+                "none",
+                "nan",
+                "NaN",
+                ""
+            ],
+            np.nan
+        )
+
+        overlap_df[
+            "Industry_2"
+        ] = overlap_df[
+            "Industry_2"
+        ].replace(
+            [
+                "None",
+                "none",
+                "nan",
+                "NaN",
+                ""
+            ],
+            np.nan
+        )
+
+        # combine industries
+        overlap_df[
+            "Industry"
+        ] = (
+            overlap_df[
+                "Industry_1"
+            ]
+            .fillna(
+                overlap_df[
+                    "Industry_2"
+                ]
+            )
+        )
+
+        # final fallback
+        overlap_df[
+            "Industry"
+        ] = (
+            overlap_df[
+                "Industry"
+            ]
+            .fillna(
+                "Unknown"
+            )
+        )
+
+        # ======================================
+        # OVERLAP WEIGHT
+        # ======================================
+        overlap_df[
+            "MinWeight"
+        ] = overlap_df[
+            [
+                "Weight_1",
+                "Weight_2"
+            ]
+        ].min(
+            axis=1
+        )
+
+        # ======================================
+        # OVERLAP %
+        # ======================================
+        overlap_pct = round(
+
+            overlap_df[
+                "MinWeight"
+            ].sum(),
+
+            2
+        )
+
+        return (
+            overlap_pct,
+            overlap_df
+        )
+
+    except Exception as e:
+
+        st.error(
+            f"Overlap calculation error: {e}"
+        )
+
+        return (
+            0,
+            pd.DataFrame()
+        )
+
 # ==========================================================
 # PORTFOLIO SUMMARY
 # ==========================================================
@@ -1052,7 +1508,288 @@ st.dataframe(
 )
 
 
-    # ======================================================
+# ======================================
+# FUND HOLDINGS DATABASE
+# ======================================
+
+def get_fund_holdings(fund_name):
+
+    fund_upper = (
+        fund_name.upper()
+    )
+
+    # BANDHAN SMALL CAP
+    if "BANDHAN" in fund_upper:
+
+        return load_fund_excel(
+            "bandhan_small_cap_mar_2026.xlsx"
+        )
+
+    # HDFC FLEXI CAP
+    elif "HDFC FLEXI" in fund_upper:
+
+        return load_fund_excel(
+            "hdfc_flexi_cap_apr_2026.xlsx"
+        )
+
+    # HDFC MID CAP
+    elif "HDFC MID CAP" in fund_upper:
+
+        return load_fund_excel(
+            "hdfc_mid_cap_apr_2026.xlsx"
+        )
+
+    # PARAG PARIKH FLEXI
+    elif (
+        "PARAG" in fund_upper
+        or
+        "PPFAS" in fund_upper
+    ):
+
+        return load_fund_excel(
+            "parag_parikh_flexi_apr_2026.xlsx"
+        )
+
+    # MOTILAL OSWAL BSE ENHANCED VALUE INDEX FUND
+    elif (
+        "MOTILAL OSWAL BSE ENHANCED VALUE"
+        in fund_upper
+    ):
+
+        return load_fund_excel(
+
+            file_path=
+            "Motilal_Oswal_BSE_Enhanced_Value_Index_Fund_apr_2026.xlsx"
+        )
+
+    return pd.DataFrame()
+
+# ==========================================================
+# FUND OVERLAP ANALYSIS
+# ==========================================================
+
+fund_list = sorted(
+    portfolio_df[
+        "Fund Name"
+    ].unique()
+)
+
+if len(fund_list) >= 2:
+
+    with st.expander(
+
+        "📊 Mutual Fund Overlap Analysis",
+
+        expanded=False
+    ):
+
+        # ======================================
+        # FUND SELECTION
+        # ======================================
+        col1, col2 = st.columns(2)
+
+        with col1:
+
+            selected_fund_1 = st.selectbox(
+
+                "Fund 1",
+
+                fund_list,
+
+                key="overlap_1"
+            )
+
+        with col2:
+
+            selected_fund_2 = st.selectbox(
+
+                "Fund 2",
+
+                fund_list,
+
+                index=1,
+
+                key="overlap_2"
+            )
+
+        # ======================================
+        # HOLDINGS DATE
+        # ======================================
+        col_date1, col_date2 = st.columns(2)
+
+        with col_date1:
+
+            if "PARAG" in selected_fund_1.upper():
+
+                st.caption(
+                    "📅 Holdings Updated: 30/04/2026"
+                )
+
+            elif "HDFC FLEXI" in selected_fund_1.upper():
+
+                st.caption(
+                    "📅 Holdings Updated: April 2026"
+                )
+
+            elif "HDFC MID CAP" in selected_fund_1.upper():
+
+                st.caption(
+                    "📅 Holdings Updated: April 2026"
+                )
+
+            elif "BANDHAN" in selected_fund_1.upper():
+
+                st.caption(
+                    "📅 Holdings Updated: 31/03/2026"
+                )
+
+            elif (
+                "MOTILAL OSWAL BSE ENHANCED VALUE"
+                in selected_fund_1.upper()
+            ):
+
+                st.caption(
+                    "📅 Holdings Updated: April 2026"
+                )
+
+        with col_date2:
+
+            if "PARAG" in selected_fund_2.upper():
+
+                st.caption(
+                    "📅 Holdings Updated: 30/04/2026"
+                )
+
+            elif "HDFC FLEXI" in selected_fund_2.upper():
+
+                st.caption(
+                    "📅 Holdings Updated: April 2026"
+                )
+
+            elif "HDFC MID CAP" in selected_fund_2.upper():
+
+                st.caption(
+                    "📅 Holdings Updated: April 2026"
+                )
+
+            elif "BANDHAN" in selected_fund_2.upper():
+
+                st.caption(
+                    "📅 Holdings Updated: 31/03/2026"
+                )
+
+            elif (
+                "MOTILAL OSWAL BSE ENHANCED VALUE"
+                in selected_fund_2.upper()
+            ):
+
+                st.caption(
+                    "📅 Holdings Updated: April 2026"
+                )
+
+        # ======================================
+        # OVERLAP ANALYSIS
+        # ======================================
+        if selected_fund_1 != selected_fund_2:
+
+            holdings_1 = get_fund_holdings(
+                selected_fund_1
+            )
+
+            holdings_2 = get_fund_holdings(
+                selected_fund_2
+            )
+
+            overlap_pct, overlap_df = (
+                calculate_fund_overlap(
+                    holdings_1,
+                    holdings_2
+                )
+            )
+
+            st.metric(
+                "Overlap %",
+                f"{overlap_pct:.2f}%"
+            )
+
+            st.progress(
+                min(
+                    overlap_pct / 100,
+                    1.0
+                )
+            )
+
+            if overlap_pct < 15:
+
+                st.success(
+                    "🟢 Low overlap"
+                )
+
+                st.info(
+                    "Good diversification between these funds."
+                )
+
+            elif overlap_pct < 35:
+
+                st.warning(
+                    "🟡 Moderate overlap"
+                )
+
+                st.info(
+                    "Some common holdings exist."
+                )
+
+            else:
+
+                st.error(
+                    "🔴 High overlap"
+                )
+
+                st.warning(
+                    "Too much overlap between these funds."
+                )
+
+            if not overlap_df.empty:
+
+                overlap_display = (
+                    overlap_df[
+                        [
+                            "Stock",
+                            "Industry",
+                            "Weight_1",
+                            "Weight_2"
+                        ]
+                    ]
+                    .copy()
+                )
+
+                overlap_display.columns = [
+
+                    "Stock",
+
+                    "Industry",
+
+                    f"{selected_fund_1[:20]} %",
+
+                    f"{selected_fund_2[:20]} %"
+                ]
+
+                st.dataframe(
+                    overlap_display,
+                    use_container_width=True,
+                    hide_index=True,
+                    height=450
+                )
+
+else:
+
+    st.info(
+        "Add at least 2 mutual funds "
+        "to use overlap analysis."
+    )
+
+
+# ======================================================
 # FUND TYPE LOOP
 # ======================================================
 for ft in (
@@ -1380,14 +2117,14 @@ mf_type = col2.selectbox(
     mutual_fund_types
 )
 
-selected_index = col3.selectbox(
+selected_fund = col3.selectbox(
     "Mutual Fund",
-    fund_df.index,
-    format_func=lambda x:
-    fund_df.loc[
-        x,
-        "Fund Name"
-    ]
+
+    options=fund_df["Fund Name"].tolist(),
+
+    index=None,
+
+    placeholder="Search mutual fund..."
 )
 
 investment_amount = col4.number_input(
@@ -1400,15 +2137,15 @@ if st.button("Add Investment"):
 
     try:
 
-        scheme_code = fund_df.loc[
-            selected_index,
-            "Scheme Code"
-        ]
+        scheme_code = (
+            fund_df[
+                fund_df["Fund Name"]
+                == selected_fund
+            ]["Scheme Code"]
+            .iloc[0]
+        )
 
-        fund_name = fund_df.loc[
-            selected_index,
-            "Fund Name"
-        ]
+        fund_name = selected_fund
 
         invest_date_str = (
             investment_date.strftime(
