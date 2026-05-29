@@ -9,6 +9,7 @@ from pyxirr import xirr
 import numpy as np
 from bs4 import BeautifulSoup
 import io
+import plotly.express as px
 
 # ==========================================================
 # PAGE CONFIG
@@ -783,6 +784,9 @@ FUND_HOLDINGS_DATE = {
     "HDFC FLEXI":
         "April 2026",
 
+    "ICICI":
+    "April 2026",
+
     "PARAG":
         "30/04/2026"
 }
@@ -1152,6 +1156,337 @@ def calculate_fund_overlap(
             0,
             pd.DataFrame()
         )
+
+# ==========================================================
+# MULTI FUND OVERLAP
+# ==========================================================
+def calculate_multi_fund_overlap(
+    selected_funds
+):
+
+    all_holdings = []
+
+    for fund in selected_funds:
+
+        holdings = (
+            get_fund_holdings(
+                fund
+            )
+        )
+
+        if holdings.empty:
+            continue
+
+        holdings = (
+            holdings.copy()
+        )
+
+        holdings[
+            "Stock_Normalized"
+        ] = (
+            holdings["Stock"]
+            .apply(
+                normalize_stock_name
+            )
+        )
+
+        holdings[
+            "Fund Name"
+        ] = fund
+
+        all_holdings.append(
+            holdings
+        )
+
+    if not all_holdings:
+
+        return pd.DataFrame()
+
+    combined_df = pd.concat(
+        all_holdings,
+        ignore_index=True
+    )
+
+    # ======================================
+    # PIVOT TABLE
+    # ======================================
+    pivot_df = (
+        combined_df
+        .pivot_table(
+
+            index=[
+                "Stock_Normalized"
+            ],
+
+            columns=
+            "Fund Name",
+
+            values=
+            "Weight",
+
+            aggfunc=
+            "sum",
+
+            fill_value=0
+        )
+        .reset_index()
+    )
+
+    # ======================================
+    # STOCK NAME
+    # ======================================
+    stock_map = (
+        combined_df
+        .drop_duplicates(
+            "Stock_Normalized"
+        )
+        [
+            [
+                "Stock_Normalized",
+                "Stock",
+                "Industry"
+            ]
+        ]
+    )
+
+    overlap_df = (
+        pivot_df.merge(
+
+            stock_map,
+
+            on=
+            "Stock_Normalized",
+
+            how=
+            "left"
+        )
+    )
+
+    # ======================================
+    # FUND COUNT
+    # ======================================
+    fund_cols = [
+        x for x in overlap_df.columns
+        if x in selected_funds
+    ]
+
+    overlap_df[
+        "Fund Count"
+    ] = (
+        overlap_df[
+            fund_cols
+        ] > 0
+    ).sum(
+        axis=1
+    )
+
+    # ======================================
+    # TOTAL EXPOSURE
+    # ======================================
+    overlap_df[
+        "Total Exposure"
+    ] = (
+        overlap_df[
+            fund_cols
+        ]
+        .sum(axis=1)
+        .round(2)
+    )
+
+    # ======================================
+    # SORT
+    # ======================================
+    overlap_df = (
+        overlap_df
+        .sort_values(
+
+            by=[
+                "Fund Count",
+                "Total Exposure"
+            ],
+
+            ascending=False
+        )
+    )
+
+    columns_to_show = [
+
+        "Stock",
+
+        "Industry",
+
+        "Fund Count",
+
+        "Total Exposure"
+
+    ] + fund_cols
+
+    return (
+        overlap_df[
+            columns_to_show
+        ]
+    )
+
+# ==========================================================
+# INDUSTRY DISTRIBUTION
+# ==========================================================
+def calculate_industry_distribution(
+    selected_funds
+):
+
+    industry_data = []
+
+    for fund in selected_funds:
+
+        holdings = (
+            get_fund_holdings(
+                fund
+            )
+        )
+
+        if holdings.empty:
+            continue
+
+        industry_df = (
+            holdings
+            .groupby(
+                "Industry",
+                as_index=False
+            )["Weight"]
+            .sum()
+        )
+
+        industry_df[
+            "Fund"
+        ] = fund
+
+        industry_data.append(
+            industry_df
+        )
+
+    if not industry_data:
+
+        return pd.DataFrame()
+
+    combined_df = pd.concat(
+
+        industry_data,
+
+        ignore_index=True
+    )
+
+    pivot_df = (
+        combined_df
+        .pivot_table(
+
+            index="Industry",
+
+            columns="Fund",
+
+            values="Weight",
+
+            fill_value=0
+        )
+    )
+
+    return (
+        pivot_df
+        .round(1)
+    )
+
+# ==========================================================
+# OVERLAP MATRIX COLORS
+# ==========================================================
+def color_overlap(val):
+
+    if val == 100:
+        return (
+            "background-color: "
+            "#2E8B57; color: white"
+        )
+
+    elif val < 10:
+        return (
+            "background-color: "
+            "#1B5E20; color: white"
+        )
+
+    elif val < 25:
+        return (
+            "background-color: "
+            "#F9A825; color: black"
+        )
+
+    elif val < 40:
+        return (
+            "background-color: "
+            "#EF6C00; color: white"
+        )
+
+    else:
+        return (
+            "background-color: "
+            "#C62828; color: white"
+        )
+
+# ==========================================================
+# OVERLAP MATRIX
+# ==========================================================
+def calculate_overlap_matrix(
+    selected_funds
+):
+
+    overlap_matrix = pd.DataFrame(
+
+        index=selected_funds,
+
+        columns=selected_funds,
+
+        dtype=float
+    )
+
+    for i, fund1 in enumerate(selected_funds):
+
+        for j, fund2 in enumerate(selected_funds):
+
+            if i == j:
+
+                overlap_matrix.loc[
+                    fund1,
+                    fund2
+                ] = 100
+
+            else:
+
+                holdings_1 = (
+                    get_fund_holdings(
+                        fund1
+                    )
+                )
+
+                holdings_2 = (
+                    get_fund_holdings(
+                        fund2
+                    )
+                )
+
+                overlap_pct, _ = (
+                    calculate_fund_overlap(
+                        holdings_1,
+                        holdings_2
+                    )
+                )
+
+                overlap_matrix.loc[
+                    fund1,
+                    fund2
+                ] = overlap_pct
+
+    return (
+        overlap_matrix
+        .round(1)
+    )
+
 
 # ==========================================================
 # PORTFOLIO SUMMARY
@@ -1539,7 +1874,16 @@ def get_fund_holdings(fund_name):
             "hdfc_mid_cap_apr_2026.xlsx"
         )
 
-    # PARAG PARIKH FLEXI
+    # ICICI_Prudential_Multi_Asset_Fund
+    elif (
+        "ICICI" in fund_upper
+    ):
+
+        return load_fund_excel(
+            "ICICI_Prudential_Multi_Asset_Fund_apr_2026.xlsx"
+        )
+
+        # PARAG PARIKH FLEXI
     elif (
         "PARAG" in fund_upper
         or
@@ -1565,7 +1909,7 @@ def get_fund_holdings(fund_name):
     return pd.DataFrame()
 
 # ==========================================================
-# FUND OVERLAP ANALYSIS
+# MULTI FUND OVERLAP ANALYSIS
 # ==========================================================
 
 fund_list = sorted(
@@ -1583,203 +1927,503 @@ if len(fund_list) >= 2:
         expanded=False
     ):
 
-        # ======================================
-        # FUND SELECTION
-        # ======================================
-        col1, col2 = st.columns(2)
+        selected_funds = st.multiselect(
 
-        with col1:
+            "Select Mutual Funds (2–6)",
 
-            selected_fund_1 = st.selectbox(
+            fund_list,
 
-                "Fund 1",
+            default=fund_list[:2],
 
-                fund_list,
+            max_selections=6
+        )
 
-                key="overlap_1"
+        if len(selected_funds) == 0:
+
+            st.warning(
+                "Please select at least 1 fund."
             )
 
-        with col2:
+        else:
 
-            selected_fund_2 = st.selectbox(
-
-                "Fund 2",
-
-                fund_list,
-
-                index=1,
-
-                key="overlap_2"
-            )
-
-        # ======================================
-        # HOLDINGS DATE
-        # ======================================
-        col_date1, col_date2 = st.columns(2)
-
-        with col_date1:
-
-            if "PARAG" in selected_fund_1.upper():
-
-                st.caption(
-                    "📅 Holdings Updated: 30/04/2026"
-                )
-
-            elif "HDFC FLEXI" in selected_fund_1.upper():
-
-                st.caption(
-                    "📅 Holdings Updated: April 2026"
-                )
-
-            elif "HDFC MID CAP" in selected_fund_1.upper():
-
-                st.caption(
-                    "📅 Holdings Updated: April 2026"
-                )
-
-            elif "BANDHAN" in selected_fund_1.upper():
-
-                st.caption(
-                    "📅 Holdings Updated: 31/03/2026"
-                )
-
-            elif (
-                "MOTILAL OSWAL BSE ENHANCED VALUE"
-                in selected_fund_1.upper()
-            ):
-
-                st.caption(
-                    "📅 Holdings Updated: April 2026"
-                )
-
-        with col_date2:
-
-            if "PARAG" in selected_fund_2.upper():
-
-                st.caption(
-                    "📅 Holdings Updated: 30/04/2026"
-                )
-
-            elif "HDFC FLEXI" in selected_fund_2.upper():
-
-                st.caption(
-                    "📅 Holdings Updated: April 2026"
-                )
-
-            elif "HDFC MID CAP" in selected_fund_2.upper():
-
-                st.caption(
-                    "📅 Holdings Updated: April 2026"
-                )
-
-            elif "BANDHAN" in selected_fund_2.upper():
-
-                st.caption(
-                    "📅 Holdings Updated: 31/03/2026"
-                )
-
-            elif (
-                "MOTILAL OSWAL BSE ENHANCED VALUE"
-                in selected_fund_2.upper()
-            ):
-
-                st.caption(
-                    "📅 Holdings Updated: April 2026"
-                )
-
-        # ======================================
-        # OVERLAP ANALYSIS
-        # ======================================
-        if selected_fund_1 != selected_fund_2:
-
-            holdings_1 = get_fund_holdings(
-                selected_fund_1
-            )
-
-            holdings_2 = get_fund_holdings(
-                selected_fund_2
-            )
-
-            overlap_pct, overlap_df = (
-                calculate_fund_overlap(
-                    holdings_1,
-                    holdings_2
+            overlap_df = (
+                calculate_multi_fund_overlap(
+                    selected_funds
                 )
             )
-
-            st.metric(
-                "Overlap %",
-                f"{overlap_pct:.2f}%"
-            )
-
-            st.progress(
-                min(
-                    overlap_pct / 100,
-                    1.0
-                )
-            )
-
-            if overlap_pct < 15:
-
-                st.success(
-                    "🟢 Low overlap"
-                )
-
-                st.info(
-                    "Good diversification between these funds."
-                )
-
-            elif overlap_pct < 35:
-
-                st.warning(
-                    "🟡 Moderate overlap"
-                )
-
-                st.info(
-                    "Some common holdings exist."
-                )
-
-            else:
-
-                st.error(
-                    "🔴 High overlap"
-                )
-
-                st.warning(
-                    "Too much overlap between these funds."
-                )
 
             if not overlap_df.empty:
 
-                overlap_display = (
-                    overlap_df[
-                        [
-                            "Stock",
-                            "Industry",
-                            "Weight_1",
-                            "Weight_2"
+                # ==================================
+                # OVERLAP ONLY (2+ FUNDS)
+                # ==================================
+                if len(selected_funds) >= 2:
+
+                    repeated_stocks = (
+                        overlap_df[
+                            overlap_df[
+                                "Fund Count"
+                            ] > 1
                         ]
-                    ]
-                    .copy()
-                )
+                    )
 
-                overlap_display.columns = [
+                    avg_overlap = round(
 
-                    "Stock",
+                        repeated_stocks[
+                            "Total Exposure"
+                        ].mean(),
 
-                    "Industry",
+                        1
+                    )
 
-                    f"{selected_fund_1[:20]} %",
+                    fund_cols = selected_funds
 
-                    f"{selected_fund_2[:20]} %"
-                ]
+                    overall_overlap = round(
 
-                st.dataframe(
-                    overlap_display,
-                    use_container_width=True,
-                    hide_index=True,
-                    height=450
-                )
+                        overlap_df[
+                            overlap_df[
+                                "Fund Count"
+                            ] > 1
+                        ][fund_cols]
+                        .min(axis=1)
+                        .sum(),
+
+                        1
+                    )
+
+                    col1, col2, col3 = st.columns(3)
+
+                    col1.metric(
+                        "Repeated Stocks",
+                        len(repeated_stocks)
+                    )
+
+                    col2.metric(
+                        "Average Exposure",
+                        f"{avg_overlap:.1f}%"
+                    )
+
+                    col3.metric(
+                        "Portfolio Overlap",
+                        f"{overall_overlap:.1f}%"
+                    )
+
+                    with st.expander(
+
+                        "📊 Overlap Matrix",
+
+                        expanded=False
+                    ):
+
+                        matrix_df = (
+                            calculate_overlap_matrix(
+                                selected_funds
+                            )
+                        )
+
+                        styled_matrix = (
+                            matrix_df.style
+                            .format("{:.1f}")
+                            .map(
+                                color_overlap
+                            )
+                        )
+
+                        st.dataframe(
+
+                            styled_matrix,
+
+                            use_container_width=True
+                        )
+
+
+                # ==================================
+                # INDUSTRY DISTRIBUTION CHART
+                # ==================================
+                with st.expander(
+
+                    "📈 Industry Distribution",
+
+                    expanded=False
+                ):
+
+                    industry_df = (
+                        calculate_industry_distribution(
+                            selected_funds
+                        )
+                    )
+
+                    if not industry_df.empty:
+
+                        plot_df = (
+                            industry_df
+                            .reset_index()
+                            .melt(
+
+                                id_vars="Industry",
+
+                                var_name="Fund",
+
+                                value_name="Weight"
+                            )
+                        )
+
+                        fig = px.bar(
+
+                            plot_df,
+
+                            x="Industry",
+
+                            y="Weight",
+
+                            color="Fund",
+
+                            barmode="group",
+
+                            title="Industry-wise Exposure"
+                        )
+
+                        fig.update_layout(
+
+                            height=500,
+
+                            xaxis_title="Industry",
+
+                            yaxis_title="Weight (%)",
+
+                            xaxis_tickangle=-45,
+
+                            legend_title="Funds"
+                        )
+
+                        st.plotly_chart(
+
+                            fig,
+
+                            use_container_width=True
+                        )
+
+                # ==================================
+                # INDUSTRY EXPOSURE TABLE
+                # ==================================
+                with st.expander(
+
+                    "🏭 Industry Exposure Comparison",
+
+                    expanded=False
+                ):
+
+                    industry_table = (
+                        industry_df
+                        .reset_index()
+                    )
+
+                    # sort by total exposure
+                    industry_table["Total"] = (
+
+                        industry_table[
+                            selected_funds
+                        ]
+                        .sum(axis=1)
+                    )
+
+                    industry_table = (
+
+                        industry_table
+                        .sort_values(
+
+                            by="Total",
+
+                            ascending=False
+                        )
+                        .drop(
+                            columns="Total"
+                        )
+                    )
+
+                    industry_table = (
+                        industry_table
+                        .round(1)
+                    )
+
+                    st.dataframe(
+
+                        industry_table,
+
+                        use_container_width=True,
+
+                        hide_index=True
+                    )
+
+                # ==================================
+                # INDUSTRY STOCK BREAKDOWN
+                # ==================================
+                with st.expander(
+
+                    "🏢 Industry Holdings Breakdown",
+
+                    expanded=False
+                ):
+
+                    # ==================================
+                    # SORT INDUSTRIES BY EXPOSURE
+                    # ==================================
+                    industry_order = (
+
+                        overlap_df
+                        .groupby(
+                            "Industry",
+                            as_index=False
+                        )[
+                            "Total Exposure"
+                        ]
+                        .sum()
+                        .sort_values(
+
+                            by="Total Exposure",
+
+                            ascending=False
+                        )
+                    )
+
+                    for industry in (
+                        industry_order[
+                            "Industry"
+                        ]
+                    ):
+
+                        industry_stocks = (
+                            overlap_df[
+                                overlap_df[
+                                    "Industry"
+                                ] == industry
+                            ]
+                            .copy()
+                        )
+
+                        if industry_stocks.empty:
+                            continue
+
+                        industry_total = round(
+
+                            industry_stocks[
+                                "Total Exposure"
+                            ].sum(),
+
+                            1
+                        )
+
+                        with st.expander(
+
+                            f"🏭 {industry} "
+                            f"({industry_total:.1f}%)"
+                        ):
+
+                            display_cols = [
+
+                                "Stock",
+
+                                "Total Exposure"
+
+                            ] + selected_funds
+
+                            display_cols = [
+
+                                col for col
+                                in display_cols
+
+                                if col
+                                in industry_stocks.columns
+                            ]
+
+                            industry_stocks = (
+                                industry_stocks
+                                .sort_values(
+
+                                    by="Total Exposure",
+
+                                    ascending=False
+                                )
+                            )
+
+                            st.dataframe(
+
+                                industry_stocks[
+                                    display_cols
+                                ].round(1),
+
+                                use_container_width=True,
+
+                                hide_index=True
+                            )
+
+                # ==================================
+                # COMMON STOCKS ACROSS FUNDS
+                # ==================================
+                with st.expander(
+
+                    "🔁 Common Stocks Across Funds",
+
+                    expanded=False
+                ):
+
+                    st.subheader(
+                        "Common Stocks Across Funds"
+                    )
+
+                    # only repeated stocks
+                    common_stocks = overlap_df[
+                        overlap_df[
+                            "Fund Count"
+                        ] > 1
+                    ].copy()
+
+                    if not common_stocks.empty:
+
+                        common_stock_rows = []
+
+                        for _, row in (
+                            common_stocks.iterrows()
+                        ):
+
+                            for fund in (
+                                selected_funds
+                            ):
+
+                                weight = (
+                                    row.get(
+                                        fund,
+                                        0
+                                    )
+                                )
+
+                                if weight > 0:
+
+                                    common_stock_rows.append({
+
+                                        "Stock":
+                                        row["Stock"],
+
+                                        "Industry":
+                                        row["Industry"],
+
+                                        "Mutual Fund":
+                                        fund,
+
+                                        "Weight %":
+                                        round(
+                                            weight,
+                                            1
+                                        )
+                                    })
+
+                        common_stock_df = (
+                            pd.DataFrame(
+                                common_stock_rows
+                            )
+                        )
+
+                        # ==========================
+                        # SORT MOST COMMON FIRST
+                        # ==========================
+                        stock_count = (
+
+                            common_stock_df
+                            .groupby(
+                                "Stock"
+                            )[
+                                "Mutual Fund"
+                            ]
+                            .nunique()
+                            .reset_index(
+                                name=
+                                "Fund Count"
+                            )
+                        )
+
+                        stock_total = (
+
+                            common_stock_df
+                            .groupby(
+                                "Stock"
+                            )[
+                                "Weight %"
+                            ]
+                            .sum()
+                            .reset_index(
+                                name=
+                                "Total Exposure"
+                            )
+                        )
+
+                        common_stock_df = (
+
+                            common_stock_df
+                            .merge(
+                                stock_count,
+                                on="Stock",
+                                how="left"
+                            )
+                            .merge(
+                                stock_total,
+                                on="Stock",
+                                how="left"
+                            )
+                        )
+
+                        common_stock_df = (
+
+                            common_stock_df
+                            .sort_values(
+
+                                by=[
+
+                                    "Fund Count",
+
+                                    "Total Exposure",
+
+                                    "Weight %"
+                                ],
+
+                                ascending=[
+
+                                    False,
+
+                                    False,
+
+                                    False
+                                ]
+                            )
+                        )
+
+                        common_stock_df = (
+                            common_stock_df.drop(
+
+                                columns=[
+
+                                    "Fund Count",
+
+                                    "Total Exposure"
+                                ]
+                            )
+                        )
+
+                        st.dataframe(
+
+                            common_stock_df,
+
+                            use_container_width=True,
+
+                            hide_index=True,
+
+                            height=450
+                        )
+
+                    else:
+
+                        st.info(
+                            "No common stocks found."
+                        )
 
 else:
 
