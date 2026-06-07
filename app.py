@@ -10,6 +10,7 @@ import numpy as np
 from bs4 import BeautifulSoup
 import io
 import plotly.express as px
+import plotly.graph_objects as go
 
 # ==========================================================
 # PAGE CONFIG
@@ -46,50 +47,68 @@ def init_db():
 
     cursor = conn.cursor()
 
-    cursor.execute(
-        """
-        CREATE TABLE IF NOT EXISTS investments (
+    # ==========================================
+    # INVESTMENTS TABLE
+    # ==========================================
 
-            id BIGSERIAL PRIMARY KEY,
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS investments (
 
-            user_id INTEGER DEFAULT 1,
+        id BIGSERIAL PRIMARY KEY,
 
-            date TEXT,
+        user_id INTEGER DEFAULT 1,
 
-            fund_type TEXT,
+        date TEXT,
 
-            fund_name TEXT,
+        fund_type TEXT,
 
-            amount DOUBLE PRECISION,
+        fund_name TEXT,
 
-            purchase_nav DOUBLE PRECISION,
+        amount DOUBLE PRECISION,
 
-            nav_date TEXT,
+        purchase_nav DOUBLE PRECISION,
 
-            latest_nav DOUBLE PRECISION,
+        nav_date TEXT,
 
-            units DOUBLE PRECISION,
+        latest_nav DOUBLE PRECISION,
 
-            current_value DOUBLE PRECISION,
+        units DOUBLE PRECISION,
 
-            gain_loss DOUBLE PRECISION,
+        current_value DOUBLE PRECISION,
 
-            holding_years DOUBLE PRECISION,
+        gain_loss DOUBLE PRECISION,
 
-            cagr DOUBLE PRECISION,
+        holding_years DOUBLE PRECISION,
 
-            created_at TIMESTAMP
-            DEFAULT NOW()
-        )
-        """
+        cagr DOUBLE PRECISION,
+
+        created_at TIMESTAMP DEFAULT NOW()
     )
+    """)
+
+    # ==========================================
+    # BENCHMARK MAPPING TABLE
+    # ==========================================
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS benchmark_mapping (
+
+        fund_name TEXT PRIMARY KEY,
+
+        benchmark TEXT
+
+    )
+    """)
 
     conn.commit()
+
     cursor.close()
+
     conn.close()
 
 
 init_db()
+
 
 # ==========================================================
 # LOAD MUTUAL FUNDS
@@ -260,16 +279,24 @@ def get_nav_data(
 
     nav_data = data["data"]
 
+
+    for i, item in enumerate(nav_data[:5]):
+        print(
+            i,
+            item["date"],
+            item["nav"]
+        )
+
     target_date = datetime.strptime(
         invest_date,
         "%d/%m/%Y"
     )
 
+
     purchase_nav = None
     nav_date_used = None
 
-    # oldest → latest
-    nav_data = nav_data[::-1]
+    # MFAPI already returns newest -> oldest
 
     for item in nav_data:
 
@@ -278,16 +305,13 @@ def get_nav_data(
             "%d-%m-%Y"
         )
 
-        # nearest available NAV
-        if nav_date >= target_date:
+        if nav_date <= target_date:
 
             purchase_nav = float(
                 item["nav"]
             )
 
-            nav_date_used = (
-                item["date"]
-            )
+            nav_date_used = item["date"]
 
             break
 
@@ -295,11 +319,14 @@ def get_nav_data(
         data["data"][0]["nav"]
     )
 
+
     return (
         purchase_nav,
         latest_nav,
         nav_date_used
     )
+
+
 
 # ==========================================================
 # SAVE INVESTMENT
@@ -460,6 +487,91 @@ def load_portfolio(user_id=1):
 
     return portfolio_df
 
+# =====================================================
+# LOAD BENCHMARK MAPPING
+# =====================================================
+
+def load_benchmark_mapping():
+
+    conn = get_connection()
+
+    query = """
+    SELECT
+        fund_name,
+        benchmark
+    FROM benchmark_mapping
+    """
+
+    try:
+
+        df = pd.read_sql(
+            query,
+            conn
+        )
+
+        conn.close()
+
+        return dict(
+            zip(
+                df["fund_name"],
+                df["benchmark"]
+            )
+        )
+
+    except:
+
+        conn.close()
+
+        return {}
+
+
+# =====================================================
+# SAVE BENCHMARK MAPPING
+# =====================================================
+
+def save_benchmark_mapping(
+    fund_name,
+    benchmark
+):
+
+    conn = get_connection()
+
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        INSERT INTO benchmark_mapping
+        (
+            fund_name,
+            benchmark
+        )
+
+        VALUES
+        (
+            %s,
+            %s
+        )
+
+        ON CONFLICT (fund_name)
+
+        DO UPDATE SET
+
+        benchmark =
+        EXCLUDED.benchmark
+        """,
+
+        (
+            fund_name,
+            benchmark
+        )
+    )
+
+    conn.commit()
+
+    cursor.close()
+
+    conn.close()
+
 
 # ==========================================================
 # DELETE CONFIRMATION DIALOG
@@ -529,20 +641,21 @@ def edit_investment_dialog(row):
     # ==========================================
     # INPUTS
     # ==========================================
-    new_date = st.date_input(
-        "Investment Date",
-        value=parsed_date,
-        format="DD/MM/YYYY"
-    )
-
     new_amount = st.number_input(
         "Investment Amount (₹)",
         min_value=1.0,
-        value=float(
-            row["Amount"]
-        ),
-        step=100.0
+        value=float(row["Amount"]),
+        step=100.0,
+        key=f"edit_amount_{row['ID']}"
     )
+
+    new_date = st.date_input(
+        "Investment Date",
+        value=parsed_date,
+        format="DD/MM/YYYY",
+        key=f"edit_date_{row['ID']}"
+    )
+
 
     col1, col2 = st.columns(2)
 
@@ -584,6 +697,23 @@ def edit_investment_dialog(row):
                     )
                 )
             )
+
+            if purchase_nav is None:
+
+                st.error(
+                    f"NAV not found for {fund_name} "
+                    f"on {invest_date_str}"
+                )
+
+                st.stop()
+
+            if purchase_nav is None:
+
+                st.error(
+                    f"No NAV available for {fund_name}"
+                )
+
+                st.stop()
 
             units = (
                 new_amount
@@ -770,6 +900,173 @@ def calculate_fund_xirr(fund_df):
         return None
 
 
+def parse_portfolio_date(x):
+
+    if pd.isna(x):
+        return pd.NaT
+
+    if isinstance(
+        x,
+        (pd.Timestamp, datetime)
+    ):
+        return pd.Timestamp(x)
+
+    x = str(x).strip()
+
+    formats = [
+        "%d/%m/%Y",
+        "%d/%b/%Y",
+        "%d/%B/%Y"
+    ]
+
+    for fmt in formats:
+        try:
+            return pd.to_datetime(
+                x,
+                format=fmt
+            )
+        except:
+            pass
+
+    return pd.NaT
+
+# =====================================================
+# BENCHMARK SIP XIRR CALCULATION
+# =====================================================
+def calculate_benchmark_xirr(
+    fund_data,
+    benchmark_df
+):
+
+    fund_data = fund_data.copy()
+
+    fund_data["Date"] = (
+        fund_data["Date"]
+        .apply(parse_portfolio_date)
+    )
+
+    fund_data = (
+        fund_data
+        .sort_values("Date")
+    )
+
+    try:
+
+        benchmark_df = benchmark_df.copy()
+
+        benchmark_df["Date"] = pd.to_datetime(
+            benchmark_df["Date"],
+            errors="coerce"
+        )
+
+        benchmark_df["Close"] = pd.to_numeric(
+            benchmark_df["Close"],
+            errors="coerce"
+        )
+
+        benchmark_df = (
+            benchmark_df
+            .dropna(subset=["Date", "Close"])
+            .sort_values("Date")
+        )
+
+
+        if benchmark_df.empty:
+            return None
+
+        latest_close = float(
+            benchmark_df.loc[
+                benchmark_df["Date"].idxmax(),
+                "Close"
+            ]
+        )
+
+        total_units = 0.0
+
+        cashflows = []
+
+        for _, sip in fund_data.iterrows():
+            
+
+            sip_date = sip["Date"]
+
+            if pd.isna(sip_date):
+                continue
+
+            sip_amount = float(
+                sip["Amount"]
+            )
+
+            rows = benchmark_df[
+                benchmark_df["Date"] <= sip_date
+            ]
+
+
+            if rows.empty:
+                st.error(
+                    f"No benchmark data for {sip_date}"
+                )
+                continue
+
+            benchmark_close = float(
+                rows.iloc[-1]["Close"]
+            )
+
+            units = (
+                sip_amount
+                / benchmark_close
+            )
+
+            total_units += units
+
+            cashflows.append(
+                (
+                    sip_date,
+                    -sip_amount
+                )
+            )
+
+
+
+        if total_units == 0:
+            return None
+
+        benchmark_value = (
+            total_units
+            * latest_close
+        )
+
+        cashflows.append(
+            (
+                datetime.today(),
+                benchmark_value
+            )
+        )
+
+        benchmark_xirr = (
+            xirr(cashflows)
+            * 100
+        )
+
+        return {
+            "xirr": round(
+                benchmark_xirr,
+                2
+            ),
+            "value": round(
+                benchmark_value,
+                2
+            )
+        }
+
+    except Exception as e:
+
+        st.error(
+            f"Benchmark XIRR Error: {e}"
+        )
+
+        return None
+
 # ======================================================
 # HOLDINGS LAST UPDATE
 # ======================================================
@@ -784,7 +1081,7 @@ FUND_HOLDINGS_DATE = {
     "HDFC FLEXI":
         "April 2026",
 
-    "ICICI":
+    "ICICI PRUDENTIAL MULTI ASSET":
     "April 2026",
 
     "PARAG":
@@ -1488,13 +1785,72 @@ def calculate_overlap_matrix(
     )
 
 
+
+
+#CATEGORY_MAP
+
+CATEGORY_MAP = {
+
+    # EQUITY
+    "Large Cap": "Equity",
+    "Mid Cap": "Equity",
+    "Small Cap": "Equity",
+    "Flexi Cap": "Equity",
+    "Multi Cap": "Equity",
+    "Focused Fund": "Equity",
+    "Value Fund": "Equity",
+    "Contra Fund": "Equity",
+    "ELSS": "Equity",
+    "Index Fund": "Equity",
+    "Sectoral/Thematic": "Equity",
+
+    # HYBRID
+    "Aggressive Hybrid": "Hybrid",
+    "Balanced Advantage": "Hybrid",
+    "Multi Asset Allocation": "Hybrid",
+    "Equity Savings": "Hybrid",
+    "Arbitrage Fund": "Hybrid",
+    "Dynamic Asset Allocation": "Hybrid",
+    "Conservative Hybrid": "Hybrid",
+
+    # DEBT
+    "Liquid Fund": "Debt",
+    "Ultra Short Duration": "Debt",
+    "Low Duration": "Debt",
+    "Short Duration": "Debt",
+    "Corporate Bond": "Debt",
+    "Banking & PSU Debt": "Debt",
+    "Money Market": "Debt",
+    "Gilt Fund": "Debt",
+    "Dynamic Bond": "Debt",
+
+    # COMMODITY
+    "Gold Fund": "Commodity",
+    "Silver Fund": "Commodity",
+
+    # GLOBAL
+    "International Fund": "Global",
+    "US Equity": "Global",
+    "Global Equity": "Global",
+    "FoF Overseas": "Global"
+}
+
+
 # ==========================================================
 # PORTFOLIO SUMMARY
 # ==========================================================
 st.markdown("---")
 
+
 portfolio_df = load_portfolio(
     user_id=1
+)
+
+
+portfolio_df["Category"] = (
+    portfolio_df["Fund Type"]
+    .map(CATEGORY_MAP)
+    .fillna("Unknown")
 )
 
 st.header(
@@ -1561,17 +1917,54 @@ if not portfolio_df.empty:
 # ======================================================
 # TYPE SUMMARY
 # ======================================================
+
 type_summary = (
     portfolio_df
     .groupby(
-        "Fund Type",
+        ["Category", "Fund Type"],
         as_index=False
     )
-    .agg({
-        "Amount": "sum",
-        "Current Value": "sum",
-        "Gain/Loss": "sum"
-    })
+    .agg(
+        {
+            "Amount": "sum",
+            "Current Value": "sum",
+            "Gain/Loss": "sum"
+        }
+    )
+)
+
+# Rename for display
+type_summary.rename(
+    columns={
+        "Category": "Fund Category"
+    },
+    inplace=True
+)
+
+category_order = {
+    "Equity": 1,
+    "Hybrid": 2,
+    "Debt": 3,
+    "Commodity": 4,
+    "Global": 5
+}
+
+type_summary["SortOrder"] = (
+    type_summary["Fund Category"]
+    .map(category_order)
+)
+
+type_summary = (
+    type_summary
+    .sort_values(
+        [
+            "SortOrder",
+            "Fund Type"
+        ]
+    )
+    .drop(
+        columns="SortOrder"
+    )
 )
 
 # ==========================================
@@ -1590,33 +1983,77 @@ type_summary[
 # ==========================================
 category_xirr_list = []
 
-for fund_type in (
-    type_summary[
-        "Fund Type"
-    ]
-):
+for fund_type in type_summary["Fund Type"]:
 
-    category_df = (
-        portfolio_df[
-            portfolio_df[
-                "Fund Type"
-            ] == fund_type
-        ]
+    category_df = portfolio_df[
+        portfolio_df["Fund Type"] == fund_type
+    ]
+
+    oldest_date = (
+        category_df["Date"]
+        .apply(parse_portfolio_date)
+        .min()
     )
 
-    category_xirr = (
-        calculate_portfolio_xirr(
+    holding_days = (
+        pd.Timestamp.today() - oldest_date
+    ).days
+
+    if holding_days < 30:
+        category_xirr = None
+    else:
+        category_xirr = calculate_portfolio_xirr(
             category_df
         )
-    )
 
     category_xirr_list.append(
         category_xirr
     )
 
-type_summary[
-    "XIRR %"
-] = category_xirr_list
+# CREATE COLUMN
+xirr_values = []
+xirr_comments = []
+
+for fund_type in type_summary["Fund Type"]:
+
+    category_df = portfolio_df[
+        portfolio_df["Fund Type"] == fund_type
+    ]
+
+    oldest_date = (
+        category_df["Date"]
+        .apply(parse_portfolio_date)
+        .min()
+    )
+
+    holding_days = (
+        pd.Timestamp.today() - oldest_date
+    ).days
+
+    if holding_days < 30:
+
+        xirr_values.append(None)
+
+        xirr_comments.append(
+            f"Only {holding_days} days"
+        )
+
+    else:
+
+        xirr_values.append(
+            calculate_portfolio_xirr(category_df)
+        )
+
+        xirr_comments.append("OK")
+
+type_summary["XIRR %"] = xirr_values
+type_summary["Remarks"] = xirr_comments
+
+# ROUND
+type_summary["XIRR %"] = (
+    type_summary["XIRR %"]
+    .round(2)
+)
 
 # ==========================================
 # ROUND VALUES
@@ -1829,904 +2266,1876 @@ with col_chart2:
         fig2
     )
 
+    st.markdown("---")
+
+    col_a, col_b = st.columns([1,4])
+
+
+
+
 # ======================================================
 # MUTUAL FUND TYPE SUMMARY
 # ======================================================
-st.subheader(
-    "Mutual Fund Type Summary"
-)
 
-st.dataframe(
-    type_summary,
-    use_container_width=True,
-    hide_index=True
-)
+with st.expander(
+    "📊 Mutual Fund Type Summary",
+    expanded=False
+):
+
+    category_order = [
+        "Equity",
+        "Hybrid",
+        "Debt",
+        "Commodity",
+        "Global"
+    ]
+
+    for category in category_order:
+
+        category_table = (
+            type_summary[
+                type_summary["Fund Category"]
+                == category
+            ]
+        )
+
+        if category_table.empty:
+            continue
+
+        with st.expander(
+            f"📂 {category}",
+            expanded=False
+        ):
+
+            display_table = category_table.copy()
+
+            display_table["XIRR Display"] = np.where(
+                display_table["Remarks"] == "OK",
+                display_table["XIRR %"].astype(str) + "%",
+                display_table["Remarks"]
+            )
+
+            display_table = display_table[
+                [
+                    "Fund Type",
+                    "Amount",
+                    "Current Value",
+                    "Gain/Loss",
+                    "Allocation %",
+                    "XIRR Display"
+                ]
+            ]
+
+            st.dataframe(
+                display_table,
+                use_container_width=True,
+                hide_index=True,
+                height=min(
+                    35 * (len(display_table) + 1),
+                    250
+                )
+            )
 
 
-# ======================================
-# FUND HOLDINGS DATABASE
-# ======================================
+# =====================================================
+# BENCHMARK MAPPING STORAGE
+# =====================================================
 
-def get_fund_holdings(fund_name):
+if "benchmark_mapping" not in st.session_state:
 
-    fund_upper = (
-        fund_name.upper()
+    st.session_state.benchmark_mapping = (
+        load_benchmark_mapping()
     )
 
-    # BANDHAN SMALL CAP
-    if "BANDHAN" in fund_upper:
+# =====================================================
+# BENCHMARK ANALYSIS
+# =====================================================
 
-        return load_fund_excel(
-            "bandhan_small_cap_mar_2026.xlsx"
+BENCHMARK_FILES = {
+    "None": None,
+    "NIFTY50_TRI": "NIFTY_50_TRI.csv",
+    "NIFTY500_TRI": "NIFTY_500_TRI.csv"
+}
+
+# =====================================================
+# LOAD BENCHMARK FILE
+# =====================================================
+
+@st.cache_data
+def load_benchmark_file(file_name):
+
+    try:
+
+        df = pd.read_csv(file_name)
+
+        df.columns = (
+            df.columns
+            .astype(str)
+            .str.strip()
         )
 
-    # HDFC FLEXI CAP
-    elif "HDFC FLEXI" in fund_upper:
+        # =====================================
+        # TRI FILE SUPPORT
+        # =====================================
 
-        return load_fund_excel(
-            "hdfc_flexi_cap_apr_2026.xlsx"
+        if "Net Total Return Index" in df.columns:
+
+            df.rename(
+                columns={
+                    "Net Total Return Index": "Close"
+                },
+                inplace=True
+            )
+
+        elif "Total Returns Index" in df.columns:
+
+            df.rename(
+                columns={
+                    "Total Returns Index": "Close"
+                },
+                inplace=True
+            )
+
+        # =====================================
+        # DATE FORMAT
+        # =====================================
+
+        df["Date"] = pd.to_datetime(
+            df["Date"],
+            format="%d-%b-%y",
+            errors="coerce"
         )
 
-    # HDFC MID CAP
-    elif "HDFC MID CAP" in fund_upper:
-
-        return load_fund_excel(
-            "hdfc_mid_cap_apr_2026.xlsx"
+        df["Close"] = pd.to_numeric(
+            df["Close"],
+            errors="coerce"
         )
 
-    # ICICI_Prudential_Multi_Asset_Fund
-    elif (
-        "ICICI" in fund_upper
+        df = (
+            df
+            .dropna(subset=["Date", "Close"])
+            .sort_values("Date")
+            .reset_index(drop=True)
+        )
+
+        return df
+
+    except Exception as e:
+
+        st.error(
+            f"Benchmark load error: {e}"
+        )
+
+        return pd.DataFrame()
+
+
+
+
+if st.button("🔄 Reload Benchmark Files"):
+    st.cache_data.clear()
+    st.success("Benchmark files reloaded")
+    st.rerun()
+# =====================================================
+# BENCHMARK ANALYSIS
+# =====================================================
+
+with st.expander(
+    "📈 Benchmark Analysis",
+    expanded=False
+):
+
+    # =====================================================
+    # BENCHMARK MAPPING
+    # =====================================================
+
+    st.subheader("Benchmark Selection")
+
+    benchmark_options = [
+        "None",
+        "NIFTY50_TRI",
+        "NIFTY500_TRI"
+    ]
+
+    if "benchmark_mapping" not in st.session_state:
+        st.session_state.benchmark_mapping = {}
+
+    mapping_rows = []
+
+    for fund_name in sorted(
+        portfolio_df["Fund Name"].unique()
     ):
 
-        return load_fund_excel(
-            "ICICI_Prudential_Multi_Asset_Fund_apr_2026.xlsx"
-        )
+        fund_type = portfolio_df[
+            portfolio_df["Fund Name"] == fund_name
+        ]["Fund Type"].iloc[0]
 
-        # PARAG PARIKH FLEXI
-    elif (
-        "PARAG" in fund_upper
-        or
-        "PPFAS" in fund_upper
+        mapping_rows.append({
+
+            "Fund Type": fund_type,
+
+            "Fund Name": fund_name,
+
+            "Benchmark":
+            st.session_state.benchmark_mapping.get(
+                fund_name,
+                "None"
+            )
+        })
+
+    mapping_df = pd.DataFrame(
+        mapping_rows
+    )
+
+    edited_mapping = st.data_editor(
+
+        mapping_df,
+
+        hide_index=True,
+
+        use_container_width=True,
+
+        key="benchmark_mapping_editor",
+
+        column_config={
+
+            "Benchmark":
+            st.column_config.SelectboxColumn(
+
+                "Benchmark",
+
+                options=benchmark_options,
+
+                required=True
+            )
+        },
+
+        disabled=[
+            "Fund Type",
+            "Fund Name"
+        ]
+    )
+
+    for _, row in edited_mapping.iterrows():
+
+        st.session_state.benchmark_mapping[
+            row["Fund Name"]
+        ] = row["Benchmark"]
+
+    if st.button(
+        "💾 Save Benchmark Mapping"
     ):
 
-        return load_fund_excel(
-            "parag_parikh_flexi_apr_2026.xlsx"
+        for _, row in edited_mapping.iterrows():
+
+            fund_name = row["Fund Name"]
+
+            benchmark = row["Benchmark"]
+
+            st.session_state.benchmark_mapping[
+                fund_name
+            ] = benchmark
+
+            save_benchmark_mapping(
+                fund_name,
+                benchmark
+            )
+
+        st.success(
+            "Benchmark mapping saved"
         )
 
-    # MOTILAL OSWAL BSE ENHANCED VALUE INDEX FUND
-    elif (
-        "MOTILAL OSWAL BSE ENHANCED VALUE"
-        in fund_upper
+    # =====================================================
+    # BENCHMARK COMPARISON RESULTS
+    # =====================================================
+
+    st.subheader("Benchmark Comparison Results")
+
+    comparison_rows = []
+
+    for fund_name in sorted(
+        portfolio_df["Fund Name"].unique()
     ):
 
-        return load_fund_excel(
+        fund_data = portfolio_df[
+            portfolio_df["Fund Name"] == fund_name
+        ]
 
-            file_path=
-            "Motilal_Oswal_BSE_Enhanced_Value_Index_Fund_apr_2026.xlsx"
+ 
+
+        fund_type = fund_data[
+            "Fund Type"
+        ].iloc[0]
+
+        invested = round(
+            fund_data["Amount"].sum(),
+            2
         )
 
-    return pd.DataFrame()
+        current_value = round(
+            fund_data["Current Value"].sum(),
+            2
+        )
 
-# ==========================================================
-# MULTI FUND OVERLAP ANALYSIS
-# ==========================================================
+        fund_xirr = calculate_fund_xirr(
+            fund_data
+        )
 
-fund_list = sorted(
-    portfolio_df[
-        "Fund Name"
-    ].unique()
-)
+        benchmark_name = (
+            st.session_state.benchmark_mapping.get(
+                fund_name,
+                "None"
+            )
+        )
 
-if len(fund_list) >= 2:
+        benchmark_xirr = None
+        benchmark_value = None
+        alpha = None
+        status = "N/A"
+
+        if benchmark_name != "None":
+
+
+            benchmark_file = BENCHMARK_FILES.get(
+                benchmark_name
+            )
+
+
+            if benchmark_file:
+
+                benchmark_df = load_benchmark_file(
+                    benchmark_file
+                )
+
+
+                fund_dates = (
+                    fund_data["Date"]
+                    .apply(parse_portfolio_date)
+                )
+
+                oldest_date = fund_dates.min()
+
+
+                result = calculate_benchmark_xirr(
+                    fund_data,
+                    benchmark_df
+                )
+
+                if result:
+
+                    benchmark_xirr = result["xirr"]
+
+                    benchmark_value = result["value"]
+
+                    alpha = round(
+                        fund_xirr -
+                        benchmark_xirr,
+                        2
+                    )
+
+                    if alpha >= 5:
+                        status = "🟢 Strong Outperformance"
+
+                    elif alpha > 0:
+                        status = "🟡 Outperforming"
+
+                    elif alpha > -5:
+                        status = "🟠 Slightly Behind"
+
+                    else:
+                        status = "🔴 Underperforming"
+
+                else:
+
+                    benchmark_xirr = None
+                    benchmark_value = None
+                    alpha = None
+                    status = (
+                        "No Benchmark Data"
+                    )
+
+        comparison_rows.append({
+
+            "Fund Type":
+            fund_type,
+
+            "Fund Name":
+            fund_name,
+
+            "Benchmark":
+            benchmark_name,
+
+            "Invested":
+            invested,
+
+            "Current Value":
+            current_value,
+
+            "Fund XIRR %":
+            round(fund_xirr, 2)
+            if fund_xirr is not None
+            else None,
+
+            "Benchmark XIRR %":
+            round(benchmark_xirr, 2)
+            if benchmark_xirr is not None
+            else None,
+
+            "Benchmark Current Value ₹":
+            round(benchmark_value, 2)
+            if benchmark_value is not None
+            else None,
+
+            "Excess XIRR %":
+            alpha,
+
+            "Status":
+            status
+        })
+
+    comparison_df = pd.DataFrame(
+        comparison_rows
+    )
+
+    valid_alpha = comparison_df[
+        "Excess XIRR %"
+    ].dropna()
+
+    if not valid_alpha.empty:
+
+        avg_alpha = round(
+            valid_alpha.mean(),
+            2
+        )
+
+        st.metric(
+            "Average Portfolio Alpha",
+            f"{avg_alpha}%"
+        )
+
+    st.dataframe(
+
+        comparison_df,
+
+        hide_index=True,
+
+        use_container_width=True
+    )
+
+# =====================================================
+# INVESTMENT vs BENCHMARK TIMELINE
+# =====================================================
+
+st.markdown("---")
+st.subheader("📅 Investment vs Benchmark Timeline")
+
+for fund_name in sorted(portfolio_df["Fund Name"].unique()):
+
+    benchmark_name = (
+        st.session_state.benchmark_mapping.get(
+            fund_name,
+            "None"
+        )
+    )
+
+    if benchmark_name == "None":
+        continue
+
+    fund_data = portfolio_df[
+        portfolio_df["Fund Name"] == fund_name
+    ].copy()
+
+    if fund_data.empty:
+        continue
+
+    latest_nav = (
+        fund_data["Latest NAV"]
+        .iloc[0]
+    )
 
     with st.expander(
-
-        "📊 Mutual Fund Overlap Analysis",
-
+        f"📈 {fund_name}",
         expanded=False
     ):
 
-        selected_funds = st.multiselect(
-
-            "Select Mutual Funds (2–6)",
-
-            fund_list,
-
-            default=fund_list[:2],
-
-            max_selections=6
+        st.caption(
+            f"Default Benchmark: {benchmark_name}"
         )
 
-        if len(selected_funds) == 0:
+        available_benchmarks = [
+            "NIFTY50_TRI",
+            "NIFTY500_TRI"
+        ]
+
+        default_selection = [benchmark_name]
+
+        selected_benchmarks = st.multiselect(
+            "Compare against benchmark(s)",
+            options=available_benchmarks,
+            default=default_selection,
+            placeholder="Select benchmark(s)",
+            key=f"timeline_benchmarks_{fund_name}"
+        )
+
+        if not selected_benchmarks:
+            selected_benchmarks = default_selection
+
+        timeline_rows = []
+
+        for _, txn in fund_data.iterrows():
+
+            sip_date = parse_portfolio_date(
+                txn["Date"]
+            )
+
+            if pd.isna(sip_date):
+                continue
+
+            amount = float(txn["Amount"])
+
+            purchase_nav = float(
+                txn["Purchase NAV"]
+            )
+
+            fund_units = (
+                amount / purchase_nav
+            )
+
+            fund_current_value = (
+                fund_units * latest_nav
+            )
+
+            row = {
+
+                "Investment Date":
+                sip_date.strftime("%d-%b-%Y"),
+
+                "Invested ₹":
+                round(amount, 2),
+
+                "Fund Value ₹":
+                round(
+                    fund_current_value,
+                    2
+                )
+            }
+
+            for bm_name in selected_benchmarks:
+
+                bm_file = BENCHMARK_FILES.get(
+                    bm_name
+                )
+
+                if bm_file is None:
+                    continue
+
+                bm_df = load_benchmark_file(
+                    bm_file
+                )
+
+                bm_rows = bm_df[
+                    bm_df["Date"] <= sip_date
+                ]
+
+                if bm_rows.empty:
+                    continue
+
+                purchase_index = float(
+                    bm_rows.iloc[-1]["Close"]
+                )
+
+                latest_index = float(
+                    bm_df["Close"].iloc[-1]
+                )
+
+                benchmark_value = (
+                    amount
+                    * latest_index
+                    / purchase_index
+                )
+
+                row[f"{bm_name} ₹"] = round(
+                    benchmark_value,
+                    2
+                )
+
+                row[f"Alpha vs {bm_name} ₹"] = round(
+                    fund_current_value
+                    - benchmark_value,
+                    2
+                )
+
+            timeline_rows.append(row)
+        # ==========================================
+        # CREATE DATAFRAME
+        # ==========================================
+        timeline_df = pd.DataFrame(
+            timeline_rows
+        )
+
+        if timeline_df.empty:
+            st.info("No data available")
+            continue
+
+        # ==========================================
+        # REORDER COLUMNS
+        # ==========================================
+
+        display_cols = [
+            "Investment Date",
+            "Invested ₹",
+            "Fund Value ₹"
+        ]
+
+        for bm_name in selected_benchmarks:
+
+            bm_col = f"{bm_name} ₹"
+            alpha_col = f"Alpha vs {bm_name} ₹"
+
+            if bm_col in timeline_df.columns:
+                display_cols.append(bm_col)
+
+            if alpha_col in timeline_df.columns:
+                display_cols.append(alpha_col)
+
+        timeline_df = timeline_df[display_cols]
+
+
+        # ==========================================
+        # SORT TIMELINE - NEWEST DATE FIRST
+        # ==========================================
+
+        timeline_df["SortDate"] = pd.to_datetime(
+            timeline_df["Investment Date"],
+            format="%d-%b-%Y",
+            errors="coerce"
+        )
+
+        timeline_df = (
+            timeline_df
+            .sort_values(
+                "SortDate",
+                ascending=False
+            )
+            .drop(
+                columns=["SortDate"]
+            )
+            .reset_index(drop=True)
+        )
+
+        # ==========================================
+        # SHOW TABLE
+        # ==========================================
+
+        st.dataframe(
+            timeline_df,
+            use_container_width=False,
+            hide_index=True,
+            height=min(
+                35 * (len(timeline_df) + 1),
+                400
+            )
+        )
+
+        # ==========================================
+        # PERFORMANCE SUMMARY
+        # ==========================================
+
+        st.markdown("### 📊 Performance Summary")
+
+        fund_total_value = (
+            timeline_df["Fund Value ₹"]
+            .sum()
+        )
+
+        col1, col2, col3 = st.columns([2,2,2])
+
+        with col1:
+            st.metric(
+                "Fund Portfolio Value",
+                f"₹{fund_total_value:,.2f}"
+            )
+
+        if len(selected_benchmarks) >= 1:
+
+            bm1 = selected_benchmarks[0]
+
+            bm1_total = (
+                timeline_df[f"{bm1} ₹"]
+                .sum()
+            )
+
+            bm1_alpha = (
+                fund_total_value
+                - bm1_total
+            )
+
+            with col2:
+
+                st.metric(
+                    f"{bm1} Value",
+                    f"₹{bm1_total:,.2f}"
+                )
+
+                st.caption(
+                    f"Alpha ₹{bm1_alpha:,.2f}"
+                )
+
+        if len(selected_benchmarks) >= 2:
+
+            bm2 = selected_benchmarks[1]
+
+            bm2_total = (
+                timeline_df[f"{bm2} ₹"]
+                .sum()
+            )
+
+            bm2_alpha = (
+                fund_total_value
+                - bm2_total
+            )
+
+            with col3:
+
+                st.metric(
+                    f"{bm2} Value",
+                    f"₹{bm2_total:,.2f}"
+                )
+
+                st.caption(
+                    f"Alpha ₹{bm2_alpha:,.2f}"
+                )
+
+        # ==========================================
+        # SIP-WISE PERFORMANCE COMPARISON
+        # ==========================================
+
+        st.markdown("### 📈 SIP-wise Performance Comparison")
+
+        chart_df = timeline_df.copy()
+
+        chart_df["Investment Date"] = pd.to_datetime(
+            chart_df["Investment Date"],
+            format="%d-%b-%Y",
+            errors="coerce"
+        )
+
+        chart_df = chart_df.sort_values(
+            "Investment Date",
+            ascending=True
+        )
+
+        # --------------------------------------------------
+        # Create custom hover data
+        # --------------------------------------------------
+
+        hover_fields = []
+
+        for bm_name in selected_benchmarks:
+
+            bm_col = f"{bm_name} ₹"
+
+            if bm_col in chart_df.columns:
+                hover_fields.append(bm_col)
+
+            alpha_col = f"Alpha vs {bm_name} ₹"
+
+            if alpha_col in chart_df.columns:
+                hover_fields.append(alpha_col)
+
+        # --------------------------------------------------
+        # Plot columns
+        # --------------------------------------------------
+
+        plot_columns = ["Fund Value ₹"]
+
+        for bm_name in selected_benchmarks:
+
+            bm_col = f"{bm_name} ₹"
+
+            if bm_col in chart_df.columns:
+                plot_columns.append(bm_col)
+
+        plot_columns = list(dict.fromkeys(plot_columns))
+
+        # --------------------------------------------------
+        # Figure
+        # --------------------------------------------------
+
+        fig = go.Figure()
+
+        for col in plot_columns:
+
+            customdata = chart_df[
+                hover_fields
+            ].values
+
+            hover_text = (
+                "<b>Date:</b> %{x}<br>"
+                "<b>Fund Value:</b> ₹%{customdata[0]:,.2f}<br>"
+            )
+
+            idx = 1
+
+            for bm_name in selected_benchmarks:
+
+                bm_col = f"{bm_name} ₹"
+
+                alpha_col = f"Alpha vs {bm_name} ₹"
+
+                if bm_col in chart_df.columns:
+
+                    hover_text += (
+                        f"<b>{bm_name}:</b> "
+                        f"₹%{{customdata[{idx}]:,.2f}}<br>"
+                    )
+
+                    idx += 1
+
+                if alpha_col in chart_df.columns:
+
+                    hover_text += (
+                        f"<b>Alpha vs {bm_name}:</b> "
+                        f"₹%{{customdata[{idx}]:,.2f}}<br>"
+                    )
+
+                    idx += 1
+
+            hover_text += "<extra></extra>"
+
+            fig.add_trace(
+
+                go.Scatter(
+
+                    x=chart_df["Investment Date"],
+
+                    y=chart_df[col],
+
+                    mode="lines+markers",
+
+                    name=col,
+
+                    customdata=np.column_stack(
+
+                        [
+                            chart_df["Fund Value ₹"]
+                        ]
+
+                        +
+
+                        [
+                            chart_df[c]
+                            for c in hover_fields
+                        ]
+                    ),
+
+                    hovertemplate=hover_text
+                )
+            )
+
+        # --------------------------------------------------
+        # Layout
+        # --------------------------------------------------
+
+        fig.update_layout(
+
+            height=420,
+
+            hovermode="x unified",
+
+            xaxis_title="Investment Date",
+
+            yaxis_title="Value (₹)",
+
+            legend_title="",
+
+            margin=dict(
+                l=20,
+                r=20,
+                t=20,
+                b=20
+            )
+        )
+
+        st.plotly_chart(
+            fig,
+            use_container_width=True
+        )
+
+        # ==========================================
+        # SIP-WISE BAR CHART
+        # ==========================================
+
+        st.markdown(
+            "### 📊 SIP-wise Value Comparison (Bar Chart)"
+        )
+
+        bar_df = chart_df.copy()
+
+        # Convert dates to categorical labels
+        bar_df["Investment Date Label"] = (
+            bar_df["Investment Date"]
+            .dt.strftime("%d-%b-%Y")
+        )
+
+        fig_bar = go.Figure()
+
+        # Fund bars
+        fig_bar.add_trace(
+            go.Bar(
+                x=bar_df["Investment Date Label"],
+                y=bar_df["Fund Value ₹"],
+                name="Fund Value ₹"
+            )
+        )
+
+        # Benchmark bars
+        for bm_name in selected_benchmarks:
+
+            bm_col = f"{bm_name} ₹"
+
+            if bm_col in bar_df.columns:
+
+                fig_bar.add_trace(
+                    go.Bar(
+                        x=bar_df["Investment Date Label"],
+                        y=bar_df[bm_col],
+                        name=bm_col
+                    )
+                )
+
+        fig_bar.update_layout(
+
+            barmode="group",
+
+            height=500,
+
+            xaxis_title="Investment Date",
+
+            yaxis_title="Value (₹)",
+
+            legend_title="",
+
+            hovermode="x unified",
+
+            margin=dict(
+                l=20,
+                r=20,
+                t=20,
+                b=80
+            )
+        )
+
+        fig_bar.update_xaxes(
+            tickangle=-45
+        )
+
+        st.plotly_chart(
+            fig_bar,
+            use_container_width=True
+        )
+        # ==========================================
+        # ALPHA SUMMARY
+        # ==========================================
+
+        st.markdown(
+            "### 🎯 Alpha Summary"
+        )
+
+        summary_items = []
+
+        fund_total_value = (
+            timeline_df["Fund Value ₹"].sum()
+        )
+
+        for bm_name in selected_benchmarks:
+
+            bm_col = f"{bm_name} ₹"
+
+            if bm_col not in timeline_df.columns:
+                continue
+
+            benchmark_total = (
+                timeline_df[bm_col].sum()
+            )
+
+            alpha_total = (
+                fund_total_value
+                - benchmark_total
+            )
+
+            summary_items.append(
+                (
+                    f"Alpha vs {bm_name}",
+                    alpha_total
+                )
+            )
+
+        cols = st.columns(
+            max(1, len(summary_items))
+        )
+
+        for col, (label, value) in zip(
+            cols,
+            summary_items
+        ):
+
+            col.metric(
+                label,
+                f"₹{value:,.2f}"
+            )
+
+
+        # ==========================================
+        # PREPARE CUMULATIVE DATA
+        # ==========================================
+
+        cumulative_df = timeline_df.copy()
+
+        cumulative_df["Investment Date"] = pd.to_datetime(
+            cumulative_df["Investment Date"],
+            format="%d-%b-%Y",
+            errors="coerce"
+        )
+
+        cumulative_df = cumulative_df.sort_values(
+            "Investment Date",
+            ascending=True
+        )
+
+        # Fund cumulative growth
+        cumulative_df["Fund Cumulative ₹"] = (
+            cumulative_df["Fund Value ₹"]
+            .cumsum()
+        )
+
+        # Benchmark cumulative growth
+        for bm_name in selected_benchmarks:
+
+            bm_col = f"{bm_name} ₹"
+
+            if bm_col not in cumulative_df.columns:
+                continue
+
+            cumulative_df[
+                f"{bm_name} Cumulative ₹"
+            ] = (
+                cumulative_df[bm_col]
+                .cumsum()
+            )
+
+            cumulative_df[
+                f"Alpha vs {bm_name} Cumulative ₹"
+            ] = (
+                cumulative_df["Fund Cumulative ₹"]
+                -
+                cumulative_df[
+                    f"{bm_name} Cumulative ₹"
+                ]
+            )
+
+
+
+        # ==========================================
+        # CUMULATIVE PORTFOLIO GROWTH
+        # ==========================================
+
+        st.markdown("### 📊 Cumulative Portfolio Growth vs Benchmark")
+
+        cumulative_df = timeline_df.copy()
+
+        cumulative_df["Investment Date"] = pd.to_datetime(
+            cumulative_df["Investment Date"],
+            format="%d-%b-%Y",
+            errors="coerce"
+        )
+
+        cumulative_df = cumulative_df.sort_values(
+            "Investment Date",
+            ascending=True
+        )
+
+        # ------------------------------------------
+        # Fund cumulative growth
+        # ------------------------------------------
+
+        cumulative_df["Fund Cumulative ₹"] = (
+            cumulative_df["Fund Value ₹"]
+            .cumsum()
+        )
+
+        # ------------------------------------------
+        # Benchmark cumulative growth
+        # ------------------------------------------
+
+        for bm_name in selected_benchmarks:
+
+            bm_col = f"{bm_name} ₹"
+
+            if bm_col not in cumulative_df.columns:
+                continue
+
+            cumulative_df[
+                f"{bm_name} Cumulative ₹"
+            ] = (
+                cumulative_df[bm_col]
+                .cumsum()
+            )
+
+            cumulative_df[
+                f"Alpha vs {bm_name} Cumulative ₹"
+            ] = (
+                cumulative_df["Fund Cumulative ₹"]
+                -
+                cumulative_df[
+                    f"{bm_name} Cumulative ₹"
+                ]
+            )
+
+        # ------------------------------------------
+        # Cumulative Growth Chart
+        # ------------------------------------------
+
+        plot_columns = [
+            "Fund Cumulative ₹"
+        ]
+
+        for bm_name in selected_benchmarks:
+
+            col_name = (
+                f"{bm_name} Cumulative ₹"
+            )
+
+            if col_name in cumulative_df.columns:
+
+                plot_columns.append(
+                    col_name
+                )
+
+        chart_cumulative = (
+            cumulative_df
+            .set_index("Investment Date")
+        )
+
+        fig_cum = go.Figure()
+
+        for col in plot_columns:
+
+            fig_cum.add_trace(
+                go.Scatter(
+                    x=chart_cumulative.index,
+                    y=chart_cumulative[col],
+                    mode="lines+markers",
+                    name=col,
+                    hovertemplate=
+                    "<b>Date:</b> %{x}<br>" +
+                    f"<b>{col}:</b> ₹%{{y:,.2f}}" +
+                    "<extra></extra>"
+                )
+            )
+
+        fig_cum.update_layout(
+            height=350,
+            hovermode="x unified",
+            xaxis_title="Investment Date",
+            yaxis_title="Cumulative Value (₹)"
+        )
+
+        st.plotly_chart(
+            fig_cum,
+            use_container_width=True
+        )
+
+        # ==========================================
+        # CUMULATIVE ALPHA CHART
+        # ==========================================
+
+        st.markdown(
+            "### 📈 Cumulative Alpha Growth"
+        )
+
+        alpha_columns = []
+
+        for bm_name in selected_benchmarks:
+
+            alpha_col = (
+                f"Alpha vs {bm_name} Cumulative ₹"
+            )
+
+            if alpha_col in cumulative_df.columns:
+
+                alpha_columns.append(
+                    alpha_col
+                )
+
+        if alpha_columns:
+
+            alpha_chart_df = (
+                cumulative_df
+                .set_index("Investment Date")
+            )
+
+            fig_alpha = go.Figure()
+
+            for col in alpha_columns:
+
+                fig_alpha.add_trace(
+                    go.Scatter(
+                        x=alpha_chart_df.index,
+                        y=alpha_chart_df[col],
+                        mode="lines+markers",
+                        name=col,
+                        hovertemplate=
+                        "<b>Date:</b> %{x}<br>" +
+                        f"<b>{col}:</b> ₹%{{y:,.2f}}" +
+                        "<extra></extra>"
+                    )
+                )
+
+            fig_alpha.update_layout(
+                height=350,
+                hovermode="x unified",
+                xaxis_title="Investment Date",
+                yaxis_title="Alpha (₹)"
+            )
+
+            st.plotly_chart(
+                fig_alpha,
+                use_container_width=True
+            )
+
+
+# ==========================================================
+# INDUSTRY DISTRIBUTION ANALYSIS
+# ==========================================================
+
+fund_list = sorted(
+    portfolio_df["Fund Name"].unique()
+)
+
+with st.expander(
+    "📊 Industry Distribution Analysis",
+    expanded=False
+):
+
+    industry_funds = st.multiselect(
+        "Select Mutual Fund(s)",
+        fund_list,
+        key="industry_distribution_funds"
+    )
+
+    if len(industry_funds) == 0:
+
+        st.info(
+            "Select at least 1 mutual fund."
+        )
+
+    else:
+
+        industry_df = (
+            calculate_industry_distribution(
+                industry_funds
+            )
+        )
+
+        if industry_df.empty:
 
             st.warning(
-                "Please select at least 1 fund."
+                "No holdings data available."
             )
 
         else:
 
-            overlap_df = (
-                calculate_multi_fund_overlap(
-                    selected_funds
+            st.dataframe(
+                industry_df.round(1),
+                use_container_width=True
+            )
+
+            plot_df = (
+                industry_df
+                .reset_index()
+                .melt(
+                    id_vars="Industry",
+                    var_name="Fund",
+                    value_name="Weight"
                 )
             )
 
-            if not overlap_df.empty:
+            fig = px.bar(
+                plot_df,
+                x="Industry",
+                y="Weight",
+                color="Fund",
+                barmode="group",
+                title="Industry-wise Exposure"
+            )
 
-                # ==================================
-                # OVERLAP ONLY (2+ FUNDS)
-                # ==================================
-                if len(selected_funds) >= 2:
+            fig.update_layout(
+                height=500,
+                xaxis_tickangle=-45
+            )
 
-                    repeated_stocks = (
-                        overlap_df[
-                            overlap_df[
-                                "Fund Count"
-                            ] > 1
-                        ]
+            st.plotly_chart(
+                fig,
+                use_container_width=True
+            )
+
+# ==========================================================
+# MUTUAL FUND OVERLAP ANALYSIS
+# ==========================================================
+
+with st.expander(
+    "🔄 Mutual Fund Overlap Analysis",
+    expanded=False
+):
+
+    overlap_funds = st.multiselect(
+        "Select Mutual Funds (2-6)",
+        fund_list,
+        max_selections=6,
+        key="overlap_analysis_funds"
+    )
+
+    if len(overlap_funds) < 2:
+
+        st.info(
+            "Select at least 2 mutual funds."
+        )
+
+    else:
+
+        overlap_df = (
+            calculate_multi_fund_overlap(
+                overlap_funds
+            )
+        )
+
+        repeated_stocks = (
+            overlap_df[
+                overlap_df["Fund Count"] > 1
+            ]
+        )
+
+        fund_cols = [
+
+            fund
+
+            for fund in overlap_funds
+
+            if fund in overlap_df.columns
+        ]
+
+        avg_overlap = 0
+
+        if not repeated_stocks.empty:
+
+            avg_overlap = round(
+                repeated_stocks[
+                    "Total Exposure"
+                ].mean(),
+                1
+            )
+
+        overall_overlap = round(
+
+            overlap_df[
+                overlap_df["Fund Count"] > 1
+            ][fund_cols]
+            .min(axis=1)
+            .sum(),
+
+            1
+        )
+
+        col1, col2, col3 = st.columns(3)
+
+        col1.metric(
+            "Repeated Stocks",
+            len(repeated_stocks)
+        )
+
+        col2.metric(
+            "Average Exposure",
+            f"{avg_overlap:.1f}%"
+        )
+
+        col3.metric(
+            "Portfolio Overlap",
+            f"{overall_overlap:.1f}%"
+        )
+
+        # ======================================
+        # OVERLAP MATRIX
+        # ======================================
+
+        with st.expander(
+            "📊 Overlap Matrix",
+            expanded=False
+        ):
+
+            matrix_df = (
+                calculate_overlap_matrix(
+                    overlap_funds
+                )
+            )
+
+            styled_matrix = (
+                matrix_df.style
+                .format("{:.1f}")
+                .map(color_overlap)
+            )
+
+            st.dataframe(
+                styled_matrix,
+                use_container_width=True
+            )
+
+        # ======================================
+        # INDUSTRY EXPOSURE COMPARISON
+        # ======================================
+
+        with st.expander(
+            "🏭 Industry Exposure Comparison",
+            expanded=False
+        ):
+
+            industry_df = (
+                calculate_industry_distribution(
+                    overlap_funds
+                )
+            )
+
+            if industry_df.empty:
+
+                st.warning(
+                    "No industry data available."
+                )
+
+            else:
+
+                industry_table = (
+                    industry_df
+                    .reset_index()
+                )
+
+                available_funds = [
+
+                    fund
+
+                    for fund in overlap_funds
+
+                    if fund in industry_table.columns
+                ]
+
+                industry_table["Total"] = (
+
+                    industry_table[
+                        available_funds
+                    ]
+                    .sum(axis=1)
+                )
+
+                industry_table = (
+
+                    industry_table
+                    .sort_values(
+                        "Total",
+                        ascending=False
+                    )
+                    .drop(
+                        columns="Total"
+                    )
+                )
+
+                st.dataframe(
+                    industry_table.round(1),
+                    use_container_width=True,
+                    hide_index=True
+                )
+
+        # ======================================
+        # COMMON STOCKS
+        # ======================================
+
+        with st.expander(
+            "🔁 Common Stocks Across Funds",
+            expanded=False
+        ):
+
+            common_stocks = (
+
+                overlap_df[
+                    overlap_df[
+                        "Fund Count"
+                    ] > 1
+                ]
+                .copy()
+            )
+
+            if common_stocks.empty:
+
+                st.info(
+                    "No common stocks found."
+                )
+
+            else:
+
+                st.dataframe(
+                    common_stocks,
+                    use_container_width=True,
+                    hide_index=True
+                )
+
+
+# ======================================================
+# CATEGORY -> TYPE -> FUND
+# ======================================================
+
+category_order = [
+    "Equity",
+    "Hybrid",
+    "Debt",
+    "Commodity",
+    "Global"
+]
+
+for category in category_order:
+
+    category_df = portfolio_df[
+        portfolio_df["Category"] == category
+    ]
+
+    if category_df.empty:
+        continue
+
+    with st.expander(
+        f"📂 {category}",
+        expanded=False
+    ):
+
+        fund_types = sorted(
+            category_df["Fund Type"].unique()
+        )
+
+        for ft in fund_types:
+
+            type_df = category_df[
+                category_df["Fund Type"] == ft
+            ]
+
+            if type_df.empty:
+                continue
+
+            with st.expander(
+                f"📁 {ft}",
+                expanded=False
+            ):
+
+                fund_summary = (
+                    type_df
+                    .groupby(
+                        "Fund Name",
+                        as_index=False
+                    )
+                    .agg(
+                        {
+                            "Amount": "sum",
+                            "Current Value": "sum",
+                            "Gain/Loss": "sum"
+                        }
+                    )
+                )
+
+                # ======================================
+                # FUND XIRR
+                # ======================================
+
+                fund_xirr_list = []
+                remarks = []
+
+                for fund_name in fund_summary["Fund Name"]:
+
+                    temp_df = type_df[
+                        type_df["Fund Name"] == fund_name
+                    ]
+
+                    oldest_date = (
+                        temp_df["Date"]
+                        .apply(parse_portfolio_date)
+                        .min()
                     )
 
-                    avg_overlap = round(
+                    holding_days = (
+                        pd.Timestamp.today() - oldest_date
+                    ).days
 
-                        repeated_stocks[
-                            "Total Exposure"
-                        ].mean(),
+                    if holding_days < 30:
 
-                        1
-                    )
+                        fund_xirr_list.append(None)
 
-                    fund_cols = selected_funds
-
-                    overall_overlap = round(
-
-                        overlap_df[
-                            overlap_df[
-                                "Fund Count"
-                            ] > 1
-                        ][fund_cols]
-                        .min(axis=1)
-                        .sum(),
-
-                        1
-                    )
-
-                    col1, col2, col3 = st.columns(3)
-
-                    col1.metric(
-                        "Repeated Stocks",
-                        len(repeated_stocks)
-                    )
-
-                    col2.metric(
-                        "Average Exposure",
-                        f"{avg_overlap:.1f}%"
-                    )
-
-                    col3.metric(
-                        "Portfolio Overlap",
-                        f"{overall_overlap:.1f}%"
-                    )
-
-                    with st.expander(
-
-                        "📊 Overlap Matrix",
-
-                        expanded=False
-                    ):
-
-                        matrix_df = (
-                            calculate_overlap_matrix(
-                                selected_funds
-                            )
-                        )
-
-                        styled_matrix = (
-                            matrix_df.style
-                            .format("{:.1f}")
-                            .map(
-                                color_overlap
-                            )
-                        )
-
-                        st.dataframe(
-
-                            styled_matrix,
-
-                            use_container_width=True
-                        )
-
-
-                # ==================================
-                # INDUSTRY DISTRIBUTION CHART
-                # ==================================
-                with st.expander(
-
-                    "📈 Industry Distribution",
-
-                    expanded=False
-                ):
-
-                    industry_df = (
-                        calculate_industry_distribution(
-                            selected_funds
-                        )
-                    )
-
-                    if not industry_df.empty:
-
-                        plot_df = (
-                            industry_df
-                            .reset_index()
-                            .melt(
-
-                                id_vars="Industry",
-
-                                var_name="Fund",
-
-                                value_name="Weight"
-                            )
-                        )
-
-                        fig = px.bar(
-
-                            plot_df,
-
-                            x="Industry",
-
-                            y="Weight",
-
-                            color="Fund",
-
-                            barmode="group",
-
-                            title="Industry-wise Exposure"
-                        )
-
-                        fig.update_layout(
-
-                            height=500,
-
-                            xaxis_title="Industry",
-
-                            yaxis_title="Weight (%)",
-
-                            xaxis_tickangle=-45,
-
-                            legend_title="Funds"
-                        )
-
-                        st.plotly_chart(
-
-                            fig,
-
-                            use_container_width=True
-                        )
-
-                # ==================================
-                # INDUSTRY EXPOSURE TABLE
-                # ==================================
-                with st.expander(
-
-                    "🏭 Industry Exposure Comparison",
-
-                    expanded=False
-                ):
-
-                    industry_table = (
-                        industry_df
-                        .reset_index()
-                    )
-
-                    # sort by total exposure
-                    industry_table["Total"] = (
-
-                        industry_table[
-                            selected_funds
-                        ]
-                        .sum(axis=1)
-                    )
-
-                    industry_table = (
-
-                        industry_table
-                        .sort_values(
-
-                            by="Total",
-
-                            ascending=False
-                        )
-                        .drop(
-                            columns="Total"
-                        )
-                    )
-
-                    industry_table = (
-                        industry_table
-                        .round(1)
-                    )
-
-                    st.dataframe(
-
-                        industry_table,
-
-                        use_container_width=True,
-
-                        hide_index=True
-                    )
-
-                # ==================================
-                # INDUSTRY STOCK BREAKDOWN
-                # ==================================
-                with st.expander(
-
-                    "🏢 Industry Holdings Breakdown",
-
-                    expanded=False
-                ):
-
-                    # ==================================
-                    # SORT INDUSTRIES BY EXPOSURE
-                    # ==================================
-                    industry_order = (
-
-                        overlap_df
-                        .groupby(
-                            "Industry",
-                            as_index=False
-                        )[
-                            "Total Exposure"
-                        ]
-                        .sum()
-                        .sort_values(
-
-                            by="Total Exposure",
-
-                            ascending=False
-                        )
-                    )
-
-                    for industry in (
-                        industry_order[
-                            "Industry"
-                        ]
-                    ):
-
-                        industry_stocks = (
-                            overlap_df[
-                                overlap_df[
-                                    "Industry"
-                                ] == industry
-                            ]
-                            .copy()
-                        )
-
-                        if industry_stocks.empty:
-                            continue
-
-                        industry_total = round(
-
-                            industry_stocks[
-                                "Total Exposure"
-                            ].sum(),
-
-                            1
-                        )
-
-                        with st.expander(
-
-                            f"🏭 {industry} "
-                            f"({industry_total:.1f}%)"
-                        ):
-
-                            display_cols = [
-
-                                "Stock",
-
-                                "Total Exposure"
-
-                            ] + selected_funds
-
-                            display_cols = [
-
-                                col for col
-                                in display_cols
-
-                                if col
-                                in industry_stocks.columns
-                            ]
-
-                            industry_stocks = (
-                                industry_stocks
-                                .sort_values(
-
-                                    by="Total Exposure",
-
-                                    ascending=False
-                                )
-                            )
-
-                            st.dataframe(
-
-                                industry_stocks[
-                                    display_cols
-                                ].round(1),
-
-                                use_container_width=True,
-
-                                hide_index=True
-                            )
-
-                # ==================================
-                # COMMON STOCKS ACROSS FUNDS
-                # ==================================
-                with st.expander(
-
-                    "🔁 Common Stocks Across Funds",
-
-                    expanded=False
-                ):
-
-                    st.subheader(
-                        "Common Stocks Across Funds"
-                    )
-
-                    # only repeated stocks
-                    common_stocks = overlap_df[
-                        overlap_df[
-                            "Fund Count"
-                        ] > 1
-                    ].copy()
-
-                    if not common_stocks.empty:
-
-                        common_stock_rows = []
-
-                        for _, row in (
-                            common_stocks.iterrows()
-                        ):
-
-                            for fund in (
-                                selected_funds
-                            ):
-
-                                weight = (
-                                    row.get(
-                                        fund,
-                                        0
-                                    )
-                                )
-
-                                if weight > 0:
-
-                                    common_stock_rows.append({
-
-                                        "Stock":
-                                        row["Stock"],
-
-                                        "Industry":
-                                        row["Industry"],
-
-                                        "Mutual Fund":
-                                        fund,
-
-                                        "Weight %":
-                                        round(
-                                            weight,
-                                            1
-                                        )
-                                    })
-
-                        common_stock_df = (
-                            pd.DataFrame(
-                                common_stock_rows
-                            )
-                        )
-
-                        # ==========================
-                        # SORT MOST COMMON FIRST
-                        # ==========================
-                        stock_count = (
-
-                            common_stock_df
-                            .groupby(
-                                "Stock"
-                            )[
-                                "Mutual Fund"
-                            ]
-                            .nunique()
-                            .reset_index(
-                                name=
-                                "Fund Count"
-                            )
-                        )
-
-                        stock_total = (
-
-                            common_stock_df
-                            .groupby(
-                                "Stock"
-                            )[
-                                "Weight %"
-                            ]
-                            .sum()
-                            .reset_index(
-                                name=
-                                "Total Exposure"
-                            )
-                        )
-
-                        common_stock_df = (
-
-                            common_stock_df
-                            .merge(
-                                stock_count,
-                                on="Stock",
-                                how="left"
-                            )
-                            .merge(
-                                stock_total,
-                                on="Stock",
-                                how="left"
-                            )
-                        )
-
-                        common_stock_df = (
-
-                            common_stock_df
-                            .sort_values(
-
-                                by=[
-
-                                    "Fund Count",
-
-                                    "Total Exposure",
-
-                                    "Weight %"
-                                ],
-
-                                ascending=[
-
-                                    False,
-
-                                    False,
-
-                                    False
-                                ]
-                            )
-                        )
-
-                        common_stock_df = (
-                            common_stock_df.drop(
-
-                                columns=[
-
-                                    "Fund Count",
-
-                                    "Total Exposure"
-                                ]
-                            )
-                        )
-
-                        st.dataframe(
-
-                            common_stock_df,
-
-                            use_container_width=True,
-
-                            hide_index=True,
-
-                            height=450
+                        remarks.append(
+                            f"Only {holding_days} days"
                         )
 
                     else:
 
-                        st.info(
-                            "No common stocks found."
+                        fund_xirr_list.append(
+                            calculate_fund_xirr(temp_df)
                         )
 
-else:
+                        remarks.append("OK")
 
-    st.info(
-        "Add at least 2 mutual funds "
-        "to use overlap analysis."
-    )
+                # ======================================
+                # XIRR DISPLAY COLUMN
+                # ======================================
 
+                fund_summary["XIRR %"] = [
 
-# ======================================================
-# FUND TYPE LOOP
-# ======================================================
-for ft in (
-    portfolio_df[
-        "Fund Type"
-    ].unique()
-):
+                    f"{x:.2f}%"
+                    if x is not None
+                    else remarks[i]
 
-    ft_key = f"ft_{ft}"
-
-
-    with st.expander(
-    ft,
-    expanded=False
-    ):
-
-        # ==========================================
-        # FILTER DATA
-        # ==========================================
-        type_df = (
-            portfolio_df[
-                portfolio_df[
-                    "Fund Type"
-                ] == ft
-            ]
-        )
-
-        # ==========================================
-        # FUND SUMMARY
-        # ==========================================
-        fund_summary = (
-            type_df
-            .groupby(
-                "Fund Name",
-                as_index=False
-            )
-            .agg({
-                "Amount": "sum",
-                "Current Value": "sum",
-                "Gain/Loss": "sum"
-            })
-        )
-
-        # ==========================================
-        # ALLOCATION %
-        # ==========================================
-        type_total = (
-            fund_summary[
-                "Amount"
-            ].sum()
-        )
-
-        fund_summary[
-            "Allocation %"
-        ] = (
-            fund_summary[
-                "Amount"
-            ]
-            / type_total
-            * 100
-        ).round(2)
-
-        # ==========================================
-        # FUND XIRR %
-        # ==========================================
-        fund_xirr_list = []
-
-        for fund_name in (
-            fund_summary[
-                "Fund Name"
-            ]
-        ):
-
-            fund_df_temp = (
-                type_df[
-                    type_df[
-                        "Fund Name"
-                    ] == fund_name
+                    for i, x in enumerate(fund_xirr_list)
                 ]
-            )
 
-            fund_xirr = (
-                calculate_fund_xirr(
-                    fund_df_temp
-                )
-            )
+                # ======================================
+                # ALLOCATION %
+                # ======================================
 
-            fund_xirr_list.append(
-                fund_xirr
-            )
-
-        fund_summary[
-            "XIRR %"
-        ] = fund_xirr_list
-
-        # ==========================================
-        # ROUND VALUES
-        # ==========================================
-        fund_summary[
-            "Current Value"
-        ] = (
-            fund_summary[
-                "Current Value"
-            ].round(2)
-        )
-
-        fund_summary[
-            "Gain/Loss"
-        ] = (
-            fund_summary[
-                "Gain/Loss"
-            ].round(2)
-        )
-
-        fund_summary[
-            "XIRR %"
-        ] = (
-            fund_summary[
-                "XIRR %"
-            ].round(2)
-        )
-
-        st.dataframe(
-            fund_summary,
-            use_container_width=True,
-            hide_index=True
-        )
-
-
-
-        # ==========================================
-        # FUND LOOP
-        # ==========================================
-        for fund in (
-            type_df[
-                "Fund Name"
-            ].unique()
-        ):
-
-            fund_key = (
-                f"fund_{fund}"
-            )
-
-            with st.expander(
-                fund,
-                expanded=False
-            ):
-
-                fund_df_detail = (
-                    type_df[
-                        type_df[
-                            "Fund Name"
-                        ] == fund
-                    ]
-                ).copy()
-                # ==================================
-                # DATE CLEANUP
-                # ==================================
-                def parse_mixed_date(x):
-
-                    try:
-                        return pd.to_datetime(
-                            x,
-                            format="%d/%m/%Y"
-                        )
-
-                    except:
-
-                        try:
-                            return pd.to_datetime(
-                                x,
-                                format="%d/%b/%Y"
-                            )
-
-                        except:
-
-                            try:
-                                return pd.to_datetime(
-                                    x,
-                                    format="%d/%B/%Y"
-                                )
-
-                            except:
-                                return pd.NaT
-
-
-                fund_df_detail[
-                    "SortDate"
-                ] = (
-                    fund_df_detail[
-                        "Date"
-                    ].apply(
-                        parse_mixed_date
-                    )
+                total_type_value = (
+                    fund_summary["Current Value"]
+                    .sum()
                 )
 
-                fund_df_detail = (
-                    fund_df_detail
+                fund_summary["Allocation %"] = (
+
+                    fund_summary["Current Value"]
+                    / total_type_value
+                    * 100
+
+                ).round(2)
+
+                # ======================================
+                # SORT
+                # ======================================
+
+                fund_summary = (
+                    fund_summary
                     .sort_values(
-                        by="SortDate",
+                        by="Current Value",
                         ascending=False
                     )
                 )
 
-                fund_df_detail[
-                    "Date"
-                ] = (
-                    fund_df_detail[
-                        "SortDate"
+                # ======================================
+                # DISPLAY ONLY REQUIRED COLUMNS
+                # ======================================
+
+                display_fund_summary = fund_summary[
+                    [
+                        "Fund Name",
+                        "Amount",
+                        "Current Value",
+                        "Gain/Loss",
+                        "XIRR %",
+                        "Allocation %"
                     ]
-                    .dt.strftime(
-                        "%d/%m/%Y"
+                ]
+
+                st.dataframe(
+                    display_fund_summary,
+                    use_container_width=True,
+                    hide_index=True
+                )
+
+                # ======================================
+                # ALLOCATION %
+                # WITHIN FUND TYPE
+                # ======================================
+
+                total_type_value = (
+                    fund_summary[
+                        "Current Value"
+                    ]
+                    .sum()
+                )
+
+                fund_summary["Allocation %"] = (
+                    fund_summary[
+                        "Current Value"
+                    ]
+                    / total_type_value
+                    * 100
+                ).round(2)
+
+                # ======================================
+                # SORT LARGEST FIRST
+                # ======================================
+
+                fund_summary = (
+                    fund_summary
+                    .sort_values(
+                        by="Current Value",
+                        ascending=False
                     )
                 )
 
-                # ==================================
-                # TABLE HEADER
-                # ==================================
-                h1, h2, h3, h4, h5 = st.columns(
-                    [2.2, 2, 2, 1.5, 1.1]
-                )
+                # ======================================
+                # DISPLAY COLUMNS
+                # ======================================
 
-                h1.markdown(
-                    "**Date**"
-                )
-                h2.markdown(
-                    "**Amount**"
-                )
-                h3.markdown(
-                    "**Current Value**"
-                )
-                h4.markdown(
-                    "**Gain/Loss**"
-                )
-                h5.markdown(
-                    "**Actions**"
-                )
+                for fund in fund_summary["Fund Name"]:
 
-                # ==================================
-                # TRANSACTION ROWS
-                # ==================================
-                for _, row in (
-                    fund_df_detail
-                    .iterrows()
-                ):
+                    fund_df_detail = type_df[
+                        type_df["Fund Name"] == fund
+                    ].copy()
 
-                    c1, c2, c3, c4, c5 = st.columns(
-                        [2.2, 2, 2, 1.5, 1.1]
+                    fund_df_detail["SortDate"] = pd.to_datetime(
+                        fund_df_detail["Date"],
+                        dayfirst=True,
+                        errors="coerce"
                     )
 
-                    c1.markdown(
-                        row["Date"]
+                    fund_df_detail = (
+                        fund_df_detail
+                        .sort_values(
+                            by="SortDate",
+                            ascending=False
+                        )
+                        .drop(columns="SortDate")
                     )
 
-                    c2.markdown(
-                        f"₹{row['Amount']:.2f}"
-                    )
+                    with st.expander(
+                        f"📄 {fund}",
+                        expanded=False
+                    ):
 
-                    c3.markdown(
-                        f"₹{row['Current Value']:.2f}"
-                    )
-
-                    c4.markdown(
-                        f"₹{row['Gain/Loss']:.2f}"
-                    )
-
-                    with c5:
-
-                        edit_col, delete_col = st.columns(
-                            [1, 1]
+                        header1, header2, header3, header4, header5, header6, header7, header8, header9 = st.columns(
+                            [1.5, 1.5, 1.1, 1.1, 1.4, 1.4, 1.0, 0.9, 0.9]
                         )
 
-                        with edit_col:
+                        header1.markdown("**Date**")
+                        header2.markdown("**Amount**")
+                        header3.markdown("**Purchase NAV**")
+                        header4.markdown("**Latest NAV**")
+                        header5.markdown("**Current Value**")
+                        header6.markdown("**Gain/Loss**")
+                        header7.markdown("**Return %**")
+                        header8.markdown("**Edit**")
+                        header9.markdown("**Delete**")
 
-                            if st.button(
-                                "✏️",
-                                key=f"edit_{row['ID']}"
-                            ):
 
-                                edit_investment_dialog(
-                                    row
-                                )
 
-                        with delete_col:
+                        for idx, row in fund_df_detail.iterrows():
 
-                            if st.button(
-                                "🗑",
-                                key=f"delete_{row['ID']}"
-                            ):
+                            col1, col2, col3, col4, col5, col6, col7, col8, col9 = st.columns(
+                                [1.5, 1.5, 1.1, 1.1, 1.4, 1.4, 1.0, 0.9, 0.9]
+                            )
 
-                                confirm_delete_dialog(
-                                    row["ID"]
-                                )
+                            col1.write(row["Date"])
+
+                            col2.write(
+                                f"₹{row['Amount']:,.2f}"
+                            )
+
+                            col3.write(
+                                f"{row['Purchase NAV']:.2f}"
+                            )
+
+                            col4.write(
+                                f"{row['Latest NAV']:.2f}"
+                            )
+
+                            col5.write(
+                                f"₹{row['Current Value']:,.2f}"
+                            )
+
+                            col6.write(
+                                f"₹{row['Gain/Loss']:,.2f}"
+                            )
+
+                            return_pct = (
+                                row["Gain/Loss"]
+                                / row["Amount"]
+                            ) * 100
+
+                            col7.write(
+                                f"{return_pct:.2f}%"
+                            )
+
+                            with col8:
+
+                                if st.button(
+                                    "✏️",
+                                    key=f"edit_{row['ID']}",
+                                    use_container_width=True
+                                ):
+                                    edit_investment_dialog(row)
+
+                            with col9:
+
+                                if st.button(
+                                    "🗑️",
+                                    key=f"delete_{row['ID']}",
+                                    use_container_width=True
+                                ):
+                                    confirm_delete_dialog(
+                                        row["ID"]
+                                    )
+
+# ======================================================
+# FUND CATEGORY -> FUND TYPE MAPPING
+# ======================================================
+
+CATEGORY_TYPES = {
+
+    "Equity": [
+        "Large Cap",
+        "Mid Cap",
+        "Small Cap",
+        "Flexi Cap",
+        "Multi Cap",
+        "Focused Fund",
+        "Value Fund",
+        "Contra Fund",
+        "ELSS",
+        "Index Fund",
+        "Sectoral/Thematic"
+    ],
+
+    "Hybrid": [
+        "Aggressive Hybrid",
+        "Balanced Advantage",
+        "Multi Asset Allocation",
+        "Equity Savings",
+        "Arbitrage Fund",
+        "Dynamic Asset Allocation",
+        "Conservative Hybrid"
+    ],
+
+    "Debt": [
+        "Liquid Fund",
+        "Ultra Short Duration",
+        "Low Duration",
+        "Short Duration",
+        "Corporate Bond",
+        "Banking & PSU Debt",
+        "Money Market",
+        "Gilt Fund",
+        "Dynamic Bond"
+    ],
+
+    "Commodity": [
+        "Gold Fund",
+        "Silver Fund"
+    ],
+
+    "Global": [
+        "International Fund",
+        "US Equity",
+        "Global Equity",
+        "FoF Overseas"
+    ]
+}
 
 
 # ==========================================================
@@ -2736,7 +4145,7 @@ st.subheader(
     "Add Mutual Fund Investment"
 )
 
-col1, col2, col3, col4 = st.columns(4)
+col1, col2, col3, col4, col5 = st.columns(5)
 
 investment_date = col1.date_input(
     "Investment Date",
@@ -2744,34 +4153,27 @@ investment_date = col1.date_input(
     format="DD/MM/YYYY"
 )
 
-mutual_fund_types = [
-    "Large Cap",
-    "Flexi Cap",
-    "Mid Cap",
-    "Small Cap",
-    "Hybrid",
-    "Debt",
-    "ELSS",
-    "Index Fund",
-    "Sectoral/Thematic"
-]
-
-mf_type = col2.selectbox(
-    "Mutual Fund Type",
-    mutual_fund_types
+fund_category = col2.selectbox(
+    "Fund Category",
+    list(CATEGORY_TYPES.keys())
 )
 
-selected_fund = col3.selectbox(
+
+mf_type = col3.selectbox(
+    "Mutual Fund Type",
+    CATEGORY_TYPES[
+        fund_category
+    ]
+)
+
+selected_fund = col4.selectbox(
     "Mutual Fund",
-
     options=fund_df["Fund Name"].tolist(),
-
     index=None,
-
     placeholder="Search mutual fund..."
 )
 
-investment_amount = col4.number_input(
+investment_amount = col5.number_input(
     "Investment Amount (₹)",
     min_value=100,
     step=100
@@ -2781,12 +4183,29 @@ if st.button("Add Investment"):
 
     try:
 
+        if not selected_fund:
+
+            st.error(
+                "Please select a mutual fund."
+            )
+            st.stop()
+
+        scheme_match = fund_df[
+            fund_df["Fund Name"]
+            == selected_fund
+        ]
+
+        if scheme_match.empty:
+
+            st.error(
+                f"Fund not found: {selected_fund}"
+            )
+            st.stop()
+
         scheme_code = (
-            fund_df[
-                fund_df["Fund Name"]
-                == selected_fund
-            ]["Scheme Code"]
-            .iloc[0]
+            scheme_match[
+                "Scheme Code"
+            ].iloc[0]
         )
 
         fund_name = selected_fund
@@ -2807,7 +4226,7 @@ if st.button("Add Investment"):
         )
 
         units = (
-            investment_amount
+             investment_amount
             / purchase_nav
         )
 
@@ -2816,7 +4235,7 @@ if st.button("Add Investment"):
             * latest_nav
         )
 
-        gain = (
+        gain_loss = (
             current_value
             - investment_amount
         )
@@ -2829,16 +4248,22 @@ if st.button("Add Investment"):
             / 365.25
         )
 
-        cagr = (
-            (
-                current_value
-                / investment_amount
-            )
-            ** (
-                1 / holding_years
-            )
-            - 1
-        ) * 100
+        if holding_years > 0:
+
+            cagr = (
+                (
+                    current_value
+                    / investment_amount
+                )
+                ** (
+                    1 / holding_years
+                )
+                - 1
+            ) * 100
+
+        else:
+
+            cagr = 0
 
         save_investment(
 
@@ -2877,7 +4302,7 @@ if st.button("Add Investment"):
             ),
 
             gain_loss=round(
-                gain,
+                gain_loss,
                 2
             ),
 
