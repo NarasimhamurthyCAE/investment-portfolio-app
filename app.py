@@ -326,7 +326,24 @@ def get_nav_data(
         nav_date_used
     )
 
+@st.cache_data(ttl=3600)
+def get_latest_nav(scheme_code):
 
+    try:
+
+        url = f"https://api.mfapi.in/mf/{scheme_code}"
+
+        response = requests.get(url)
+
+        data = response.json()
+
+        return float(
+            data["data"][0]["nav"]
+        )
+
+    except:
+
+        return np.nan
 
 # ==========================================================
 # SAVE INVESTMENT
@@ -424,6 +441,75 @@ def delete_investment(investment_id):
     cursor.close()
     conn.close()
 
+
+def refresh_latest_navs():
+
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT
+            id,
+            fund_name,
+            units,
+            amount
+        FROM investments
+    """)
+
+    rows = cursor.fetchall()
+
+    for row in rows:
+
+        investment_id = row[0]
+        fund_name = row[1]
+        units = row[2]
+        amount = row[3]
+
+        try:
+
+            scheme_code = (
+                fund_df[
+                    fund_df["Fund Name"]
+                    == fund_name
+                ]["Scheme Code"]
+                .iloc[0]
+            )
+
+            latest_nav = get_latest_nav(
+                scheme_code
+            )
+
+            current_value = (
+                units * latest_nav
+            )
+
+            gain_loss = (
+                current_value - amount
+            )
+
+            cursor.execute(
+                """
+                UPDATE investments
+                SET
+                    latest_nav=%s,
+                    current_value=%s,
+                    gain_loss=%s
+                WHERE id=%s
+                """,
+                (
+                    latest_nav,
+                    current_value,
+                    gain_loss,
+                    investment_id
+                )
+            )
+
+        except:
+            pass
+
+    conn.commit()
+    cursor.close()
+    conn.close()
     
 # ==========================================================
 # LOAD PORTFOLIO
@@ -432,39 +518,84 @@ def load_portfolio(user_id=1):
 
     conn = get_connection()
 
-    cursor = conn.cursor()
+    query = """
+    SELECT
+        id,
+        date,
+        fund_type,
+        fund_name,
+        amount,
+        purchase_nav,
+        nav_date,
+        units,
+        holding_years,
+        cagr
+    FROM investments
+    WHERE user_id=%s
+    """
 
-    cursor.execute(
-        """
-        SELECT
-
-            id,
-            date,
-            fund_type,
-            fund_name,
-            amount,
-            purchase_nav,
-            nav_date,
-            latest_nav,
-            units,
-            current_value,
-            gain_loss,
-            holding_years,
-            cagr
-
-        FROM investments
-
-        WHERE user_id = %s
-        """,
-        (user_id,)
+    portfolio_df = pd.read_sql(
+        query,
+        conn,
+        params=[user_id]
     )
 
-    rows = cursor.fetchall()
-
-    cursor.close()
     conn.close()
 
-    columns = [
+    if portfolio_df.empty:
+        return portfolio_df
+
+    latest_nav_list = []
+    current_value_list = []
+    gain_loss_list = []
+
+    for _, row in portfolio_df.iterrows():
+
+        try:
+
+            scheme_code = (
+                fund_df[
+                    fund_df["Fund Name"]
+                    == row["fund_name"]
+                ]["Scheme Code"]
+                .iloc[0]
+            )
+
+            latest_nav = get_latest_nav(
+                scheme_code
+            )
+
+        except:
+
+            latest_nav = np.nan
+
+        current_value = (
+            row["units"]
+            * latest_nav
+        )
+
+        gain_loss = (
+            current_value
+            - row["amount"]
+        )
+
+        latest_nav_list.append(
+            latest_nav
+        )
+
+        current_value_list.append(
+            current_value
+        )
+
+        gain_loss_list.append(
+            gain_loss
+        )
+
+    portfolio_df["Latest NAV"] = latest_nav_list
+    portfolio_df["Current Value"] = current_value_list
+    portfolio_df["Gain/Loss"] = gain_loss_list
+
+    portfolio_df.columns = [
         "ID",
         "Date",
         "Fund Type",
@@ -472,18 +603,13 @@ def load_portfolio(user_id=1):
         "Amount",
         "Purchase NAV",
         "NAV Date",
-        "Latest NAV",
         "Units",
-        "Current Value",
-        "Gain/Loss",
         "Holding Years",
-        "CAGR %"
+        "CAGR %",
+        "Latest NAV",
+        "Current Value",
+        "Gain/Loss"
     ]
-
-    portfolio_df = pd.DataFrame(
-        rows,
-        columns=columns
-    )
 
     return portfolio_df
 
@@ -956,6 +1082,7 @@ def calculate_benchmark_xirr(
 
         benchmark_df["Date"] = pd.to_datetime(
             benchmark_df["Date"],
+            format="%d-%b-%y",
             errors="coerce"
         )
 
@@ -2032,7 +2159,7 @@ for fund_type in type_summary["Fund Type"]:
 
     if holding_days < 30:
 
-        xirr_values.append(None)
+        xirr_values.append(np.nan)
 
         xirr_comments.append(
             f"Only {holding_days} days"
@@ -2050,10 +2177,10 @@ type_summary["XIRR %"] = xirr_values
 type_summary["Remarks"] = xirr_comments
 
 # ROUND
-type_summary["XIRR %"] = (
-    type_summary["XIRR %"]
-    .round(2)
-)
+type_summary["XIRR %"] = pd.to_numeric(
+    type_summary["XIRR %"],
+    errors="coerce"
+).round(2)
 
 # ==========================================
 # ROUND VALUES
@@ -2351,10 +2478,29 @@ if "benchmark_mapping" not in st.session_state:
 # BENCHMARK ANALYSIS
 # =====================================================
 
+# =====================================================
+# BENCHMARK FILES
+# =====================================================
+
 BENCHMARK_FILES = {
+
     "None": None,
-    "NIFTY50_TRI": "NIFTY_50_TRI.csv",
-    "NIFTY500_TRI": "NIFTY_500_TRI.csv"
+
+    "NIFTY50_TRI":
+        "NIFTY_50_TRI.csv",
+
+    "NIFTY500_TRI":
+        "NIFTY_500_TRI.csv",
+
+    "NIFTY_MIDCAP150_TRI":
+        "NIFTY_MIDCAP_150_TRI.csv",
+
+    "NIFTY_SMALLCAP250_TRI":
+        "NIFTY_SMALLCAP_250_TRI.csv",
+
+    "NIFTY_200_TRI":
+        "NIFTY_200_TRI.csv"
+
 }
 
 # =====================================================
@@ -2366,59 +2512,161 @@ def load_benchmark_file(file_name):
 
     try:
 
+        # -------------------------------------
+        # READ CSV
+        # -------------------------------------
         df = pd.read_csv(file_name)
 
+        st.write(f"Loading: {file_name}")
+
+        st.write("Original Columns:")
+        st.write(df.columns.tolist())
+
+        st.write("First 5 Rows:")
+        st.dataframe(df.head())
+
+        # -------------------------------------
+        # CLEAN COLUMN NAMES
+        # -------------------------------------
         df.columns = (
             df.columns
             .astype(str)
             .str.strip()
         )
 
-        # =====================================
-        # TRI FILE SUPPORT
-        # =====================================
+        # -------------------------------------
+        # FIND DATE COLUMN
+        # -------------------------------------
+        date_col = None
 
-        if "Net Total Return Index" in df.columns:
+        for col in df.columns:
 
-            df.rename(
-                columns={
-                    "Net Total Return Index": "Close"
-                },
-                inplace=True
+            col_upper = str(col).upper()
+
+            if "DATE" in col_upper:
+
+                date_col = col
+                break
+
+        if date_col is None:
+
+            st.error(
+                f"No Date column found in {file_name}"
             )
 
-        elif "Total Returns Index" in df.columns:
+            return pd.DataFrame()
 
-            df.rename(
-                columns={
-                    "Total Returns Index": "Close"
-                },
-                inplace=True
+        # -------------------------------------
+        # FIND INDEX/TRI COLUMN
+        # -------------------------------------
+        value_col = None
+
+        priority_cols = [
+
+            "Net Total Return Index",
+            "Total Returns Index"
+
+        ]
+
+        for col in priority_cols:
+
+            if col in df.columns:
+
+                value_col = col
+                break
+
+        # fallback
+        if value_col is None:
+
+            for col in df.columns:
+
+                if col != date_col:
+
+                    value_col = col
+                    break
+
+        if value_col is None:
+
+            st.error(
+                f"No benchmark value column found in {file_name}"
             )
 
-        # =====================================
-        # DATE FORMAT
-        # =====================================
+            return pd.DataFrame()
 
-        df["Date"] = pd.to_datetime(
-            df["Date"],
-            format="%d-%b-%y",
-            errors="coerce"
+        # -------------------------------------
+        # RENAME
+        # -------------------------------------
+        df = df.rename(
+            columns={
+                date_col: "Date",
+                value_col: "Close"
+            }
         )
 
+        # -------------------------------------
+        # DATE CONVERSION
+        # -------------------------------------
+        df["Date"] = pd.to_datetime(
+            df["Date"],
+            errors="coerce",
+            dayfirst=True
+        )
+
+        # -------------------------------------
+        # VALUE CONVERSION
+        # -------------------------------------
         df["Close"] = pd.to_numeric(
             df["Close"],
             errors="coerce"
         )
 
+        # -------------------------------------
+        # CLEAN DATA
+        # -------------------------------------
         df = (
             df
-            .dropna(subset=["Date", "Close"])
-            .sort_values("Date")
-            .reset_index(drop=True)
+            .dropna(
+                subset=[
+                    "Date",
+                    "Close"
+                ]
+            )
+            .sort_values(
+                "Date"
+            )
+            .reset_index(
+                drop=True
+            )
+        )
+
+        st.write("Processed Columns:")
+        st.write(df.columns.tolist())
+
+        st.write(
+            "Date Range:",
+            df["Date"].min(),
+            "to",
+            df["Date"].max()
+        )
+
+        st.write(
+            "Rows Loaded:",
+            len(df)
         )
 
         return df
+
+        st.write("Selected Date Column:", date_col)
+        st.write("Selected Value Column:", value_col)
+
+        st.write(df.head())
+
+        st.write(df.dtypes)
+
+        st.write(
+            "Rows after cleaning:",
+            len(df)
+        )
 
     except Exception as e:
 
@@ -2450,11 +2698,9 @@ with st.expander(
 
     st.subheader("Benchmark Selection")
 
-    benchmark_options = [
-        "None",
-        "NIFTY50_TRI",
-        "NIFTY500_TRI"
-    ]
+    benchmark_options = list(
+        BENCHMARK_FILES.keys()
+    )
 
     if "benchmark_mapping" not in st.session_state:
         st.session_state.benchmark_mapping = {}
@@ -2762,8 +3008,17 @@ for fund_name in sorted(portfolio_df["Fund Name"].unique()):
         )
 
         available_benchmarks = [
+
             "NIFTY50_TRI",
-            "NIFTY500_TRI"
+
+            "NIFTY500_TRI",
+
+            "NIFTY_MIDCAP150_TRI",
+
+            "NIFTY_SMALLCAP250_TRI",
+
+            "NIFTY_200_TRI"
+
         ]
 
         default_selection = [benchmark_name]
@@ -2832,6 +3087,61 @@ for fund_name in sorted(portfolio_df["Fund Name"].unique()):
                     bm_file
                 )
 
+                st.write("Benchmark:", bm_name)
+
+                if bm_df.empty:
+
+                    st.error(
+                        f"{bm_name} loaded as empty dataframe"
+                    )
+
+                    continue
+
+                if "Date" not in bm_df.columns:
+
+                    st.error(
+                        f"{bm_name} Date column missing"
+                    )
+
+                    st.write(bm_df.head())
+
+                    continue
+
+                st.write(
+                    "Benchmark Min Date:",
+                    bm_df["Date"].min()
+                )
+
+                st.write(
+                    "Benchmark Max Date:",
+                    bm_df["Date"].max()
+                )
+
+                st.write(
+                    "SIP Date:",
+                    sip_date
+                )
+
+                st.write(
+                    f"{bm_name} rows:",
+                    len(bm_df)
+                )
+
+                st.write(
+                    f"SIP Date:",
+                    sip_date
+                )
+
+                st.write(
+                    f"Min Benchmark Date:",
+                    bm_df["Date"].min()
+                )
+
+                st.write(
+                    f"Max Benchmark Date:",
+                    bm_df["Date"].max()
+                )
+
                 bm_rows = bm_df[
                     bm_df["Date"] <= sip_date
                 ]
@@ -2871,6 +3181,9 @@ for fund_name in sorted(portfolio_df["Fund Name"].unique()):
         timeline_df = pd.DataFrame(
             timeline_rows
         )
+
+        st.write("Timeline Columns")
+        st.write(timeline_df.columns.tolist())
 
         if timeline_df.empty:
             st.info("No data available")
@@ -2942,68 +3255,84 @@ for fund_name in sorted(portfolio_df["Fund Name"].unique()):
 
         st.markdown("### 📊 Performance Summary")
 
+        # ==========================================
+        # TOTAL INVESTED
+        # ==========================================
+        total_invested = (
+            timeline_df["Invested ₹"]
+            .sum()
+        )
+
+        # ==========================================
+        # FUND VALUE
+        # ==========================================
         fund_total_value = (
             timeline_df["Fund Value ₹"]
             .sum()
         )
 
-        col1, col2, col3 = st.columns([2,2,2])
+        # ==========================================
+        # CREATE COLUMNS
+        # 2 fixed cards + benchmark cards
+        # ==========================================
+        num_cols = 2 + len(selected_benchmarks)
 
-        with col1:
-            st.metric(
-                "Fund Portfolio Value",
-                f"₹{fund_total_value:,.2f}"
-            )
+        summary_cols = st.columns(num_cols)
 
-        if len(selected_benchmarks) >= 1:
+        # ==========================================
+        # CARD 1 : TOTAL INVESTED
+        # ==========================================
+        summary_cols[0].metric(
+            "Total Invested",
+            f"₹{total_invested:,.2f}"
+        )
 
-            bm1 = selected_benchmarks[0]
+        # ==========================================
+        # CARD 2 : FUND VALUE
+        # ==========================================
+        summary_cols[1].metric(
+            "Fund Portfolio Value",
+            f"₹{fund_total_value:,.2f}"
+        )
 
-            bm1_total = (
-                timeline_df[f"{bm1} ₹"]
+        # ==========================================
+        # BENCHMARK CARDS
+        # ==========================================
+        for idx, bm_name in enumerate(selected_benchmarks):
+
+            bm_col = f"{bm_name} ₹"
+
+            if bm_col not in timeline_df.columns:
+                continue
+
+            bm_total = (
+                timeline_df[bm_col]
                 .sum()
             )
 
-            bm1_alpha = (
+            alpha = (
                 fund_total_value
-                - bm1_total
+                - bm_total
             )
 
-            with col2:
+            with summary_cols[idx + 2]:
 
                 st.metric(
-                    f"{bm1} Value",
-                    f"₹{bm1_total:,.2f}"
+                    f"{bm_name} Value",
+                    f"₹{bm_total:,.2f}"
                 )
 
-                st.caption(
-                    f"Alpha ₹{bm1_alpha:,.2f}"
-                )
+                if alpha >= 0:
 
-        if len(selected_benchmarks) >= 2:
+                    st.success(
+                        f"Alpha ₹{alpha:,.2f}"
+                    )
 
-            bm2 = selected_benchmarks[1]
+                else:
 
-            bm2_total = (
-                timeline_df[f"{bm2} ₹"]
-                .sum()
-            )
-
-            bm2_alpha = (
-                fund_total_value
-                - bm2_total
-            )
-
-            with col3:
-
-                st.metric(
-                    f"{bm2} Value",
-                    f"₹{bm2_total:,.2f}"
-                )
-
-                st.caption(
-                    f"Alpha ₹{bm2_alpha:,.2f}"
-                )
+                    st.error(
+                        f"Alpha ₹{alpha:,.2f}"
+                    )
 
         # ==========================================
         # SIP-WISE PERFORMANCE COMPARISON
