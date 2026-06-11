@@ -827,8 +827,10 @@ def edit_investment_dialog(row):
             if purchase_nav is None:
 
                 st.error(
-                    f"NAV not found for {fund_name} "
-                    f"on {invest_date_str}"
+                    f"NAV not found for "
+                    f"{row['Fund Name']} "
+                    f"on "
+                    f"{new_date.strftime('%d/%m/%Y')}"
                 )
 
                 st.stop()
@@ -1214,6 +1216,80 @@ FUND_HOLDINGS_DATE = {
     "PARAG":
         "30/04/2026"
 }
+
+
+# ======================================================
+# FUND HOLDINGS FILE MAPPING
+# ======================================================
+
+FUND_HOLDING_FILES = {
+
+    "Bandhan Small Cap Fund - Direct Plan - Growth":
+        "bandhan_small_cap_mar_2026.xlsx",
+
+    "HDFC Flexi Cap Fund - Growth Option - Direct Plan":
+        "hdfc_flexi_cap_apr_2026.xlsx",
+
+    "HDFC Mid-Cap Opportunities Fund - Direct Plan - Growth":
+        "hdfc_mid_cap_apr_2026.xlsx",
+
+    "ICICI Prudential Multi-Asset Fund - Direct Plan - Growth":
+        "ICICI_Prudential_Multi_Asset_Fund_apr_2026.xlsx",
+
+    "Parag Parikh Flexi Cap Fund - Direct Plan - Growth":
+        "parag_parikh_flexi_apr_2026.xlsx",
+
+    "Motilal Oswal BSE Enhanced Value Index Fund Direct Growth":
+        "Motilal_Oswal_BSE_Enhanced_Value_Index_Fund_apr_2026.xlsx"
+}
+
+
+# ======================================================
+# GET FUND HOLDINGS
+# ======================================================
+
+@st.cache_data
+def get_fund_holdings(fund_name):
+
+    fund_upper = fund_name.upper()
+
+    if "BANDHAN" in fund_upper:
+        return load_fund_excel(
+            "bandhan_small_cap_mar_2026.xlsx"
+        )
+
+    elif "HDFC FLEXI" in fund_upper:
+        return load_fund_excel(
+            "hdfc_flexi_cap_apr_2026.xlsx"
+        )
+
+    elif "HDFC MID" in fund_upper:
+        return load_fund_excel(
+            "hdfc_mid_cap_apr_2026.xlsx"
+        )
+
+    elif "ICICI" in fund_upper:
+        return load_fund_excel(
+            "ICICI_Prudential_Multi_Asset_Fund_apr_2026.xlsx"
+        )
+
+    elif "PARAG" in fund_upper:
+        return load_fund_excel(
+            "parag_parikh_flexi_apr_2026.xlsx"
+        )
+
+    elif "MOTILAL" in fund_upper:
+        return load_fund_excel(
+            "Motilal_Oswal_BSE_Enhanced_Value_Index_Fund_apr_2026.xlsx"
+        )
+
+    return pd.DataFrame()
+
+    st.write(
+        sorted(
+            portfolio_df["Fund Name"].unique()
+        )
+    )
 
 # ======================================
 # GENERIC FUND EXCEL LOADER
@@ -2478,9 +2554,6 @@ if "benchmark_mapping" not in st.session_state:
 # BENCHMARK ANALYSIS
 # =====================================================
 
-# =====================================================
-# BENCHMARK FILES
-# =====================================================
 
 BENCHMARK_FILES = {
 
@@ -2516,14 +2589,6 @@ def load_benchmark_file(file_name):
         # READ CSV
         # -------------------------------------
         df = pd.read_csv(file_name)
-
-        st.write(f"Loading: {file_name}")
-
-        st.write("Original Columns:")
-        st.write(df.columns.tolist())
-
-        st.write("First 5 Rows:")
-        st.dataframe(df.head())
 
         # -------------------------------------
         # CLEAN COLUMN NAMES
@@ -2639,34 +2704,8 @@ def load_benchmark_file(file_name):
             )
         )
 
-        st.write("Processed Columns:")
-        st.write(df.columns.tolist())
-
-        st.write(
-            "Date Range:",
-            df["Date"].min(),
-            "to",
-            df["Date"].max()
-        )
-
-        st.write(
-            "Rows Loaded:",
-            len(df)
-        )
-
         return df
 
-        st.write("Selected Date Column:", date_col)
-        st.write("Selected Value Column:", value_col)
-
-        st.write(df.head())
-
-        st.write(df.dtypes)
-
-        st.write(
-            "Rows after cleaning:",
-            len(df)
-        )
 
     except Exception as e:
 
@@ -2971,867 +3010,395 @@ with st.expander(
 # INVESTMENT vs BENCHMARK TIMELINE
 # =====================================================
 
-st.markdown("---")
-st.subheader("📅 Investment vs Benchmark Timeline")
+with st.expander(
+    "📅 Investment vs Benchmark Timeline",
+    expanded=False
+):
 
-for fund_name in sorted(portfolio_df["Fund Name"].unique()):
-
-    benchmark_name = (
-        st.session_state.benchmark_mapping.get(
-            fund_name,
-            "None"
-        )
+    fund_names = sorted(
+        portfolio_df["Fund Name"].unique()
     )
 
-    if benchmark_name == "None":
-        continue
+    tabs = st.tabs(fund_names)
 
-    fund_data = portfolio_df[
-        portfolio_df["Fund Name"] == fund_name
-    ].copy()
-
-    if fund_data.empty:
-        continue
-
-    latest_nav = (
-        fund_data["Latest NAV"]
-        .iloc[0]
-    )
-
-    with st.expander(
-        f"📈 {fund_name}",
-        expanded=False
+    for tab, fund_name in zip(
+        tabs,
+        fund_names
     ):
 
-        st.caption(
-            f"Default Benchmark: {benchmark_name}"
-        )
+        with tab:
 
-        available_benchmarks = [
-
-            "NIFTY50_TRI",
-
-            "NIFTY500_TRI",
-
-            "NIFTY_MIDCAP150_TRI",
-
-            "NIFTY_SMALLCAP250_TRI",
-
-            "NIFTY_200_TRI"
-
-        ]
-
-        default_selection = [benchmark_name]
-
-        selected_benchmarks = st.multiselect(
-            "Compare against benchmark(s)",
-            options=available_benchmarks,
-            default=default_selection,
-            placeholder="Select benchmark(s)",
-            key=f"timeline_benchmarks_{fund_name}"
-        )
-
-        if not selected_benchmarks:
-            selected_benchmarks = default_selection
-
-        timeline_rows = []
-
-        for _, txn in fund_data.iterrows():
-
-            sip_date = parse_portfolio_date(
-                txn["Date"]
+            benchmark_name = (
+                st.session_state.benchmark_mapping.get(
+                    fund_name,
+                    "None"
+                )
             )
 
-            if pd.isna(sip_date):
+            if benchmark_name == "None":
+
+                st.warning(
+                    "No benchmark assigned."
+                )
+
                 continue
 
-            amount = float(txn["Amount"])
+            fund_data = portfolio_df[
+                portfolio_df["Fund Name"] == fund_name
+            ].copy()
 
-            purchase_nav = float(
-                txn["Purchase NAV"]
-            )
-
-            fund_units = (
-                amount / purchase_nav
-            )
-
-            fund_current_value = (
-                fund_units * latest_nav
-            )
-
-            row = {
-
-                "Investment Date":
-                sip_date.strftime("%d-%b-%Y"),
-
-                "Invested ₹":
-                round(amount, 2),
-
-                "Fund Value ₹":
-                round(
-                    fund_current_value,
-                    2
-                )
-            }
-
-            for bm_name in selected_benchmarks:
-
-                bm_file = BENCHMARK_FILES.get(
-                    bm_name
-                )
-
-                if bm_file is None:
-                    continue
-
-                bm_df = load_benchmark_file(
-                    bm_file
-                )
-
-                st.write("Benchmark:", bm_name)
-
-                if bm_df.empty:
-
-                    st.error(
-                        f"{bm_name} loaded as empty dataframe"
-                    )
-
-                    continue
-
-                if "Date" not in bm_df.columns:
-
-                    st.error(
-                        f"{bm_name} Date column missing"
-                    )
-
-                    st.write(bm_df.head())
-
-                    continue
-
-                st.write(
-                    "Benchmark Min Date:",
-                    bm_df["Date"].min()
-                )
-
-                st.write(
-                    "Benchmark Max Date:",
-                    bm_df["Date"].max()
-                )
-
-                st.write(
-                    "SIP Date:",
-                    sip_date
-                )
-
-                st.write(
-                    f"{bm_name} rows:",
-                    len(bm_df)
-                )
-
-                st.write(
-                    f"SIP Date:",
-                    sip_date
-                )
-
-                st.write(
-                    f"Min Benchmark Date:",
-                    bm_df["Date"].min()
-                )
-
-                st.write(
-                    f"Max Benchmark Date:",
-                    bm_df["Date"].max()
-                )
-
-                bm_rows = bm_df[
-                    bm_df["Date"] <= sip_date
-                ]
-
-                if bm_rows.empty:
-                    continue
-
-                purchase_index = float(
-                    bm_rows.iloc[-1]["Close"]
-                )
-
-                latest_index = float(
-                    bm_df["Close"].iloc[-1]
-                )
-
-                benchmark_value = (
-                    amount
-                    * latest_index
-                    / purchase_index
-                )
-
-                row[f"{bm_name} ₹"] = round(
-                    benchmark_value,
-                    2
-                )
-
-                row[f"Alpha vs {bm_name} ₹"] = round(
-                    fund_current_value
-                    - benchmark_value,
-                    2
-                )
-
-            timeline_rows.append(row)
-        # ==========================================
-        # CREATE DATAFRAME
-        # ==========================================
-        timeline_df = pd.DataFrame(
-            timeline_rows
-        )
-
-        st.write("Timeline Columns")
-        st.write(timeline_df.columns.tolist())
-
-        if timeline_df.empty:
-            st.info("No data available")
-            continue
-
-        # ==========================================
-        # REORDER COLUMNS
-        # ==========================================
-
-        display_cols = [
-            "Investment Date",
-            "Invested ₹",
-            "Fund Value ₹"
-        ]
-
-        for bm_name in selected_benchmarks:
-
-            bm_col = f"{bm_name} ₹"
-            alpha_col = f"Alpha vs {bm_name} ₹"
-
-            if bm_col in timeline_df.columns:
-                display_cols.append(bm_col)
-
-            if alpha_col in timeline_df.columns:
-                display_cols.append(alpha_col)
-
-        timeline_df = timeline_df[display_cols]
-
-
-        # ==========================================
-        # SORT TIMELINE - NEWEST DATE FIRST
-        # ==========================================
-
-        timeline_df["SortDate"] = pd.to_datetime(
-            timeline_df["Investment Date"],
-            format="%d-%b-%Y",
-            errors="coerce"
-        )
-
-        timeline_df = (
-            timeline_df
-            .sort_values(
-                "SortDate",
-                ascending=False
-            )
-            .drop(
-                columns=["SortDate"]
-            )
-            .reset_index(drop=True)
-        )
-
-        # ==========================================
-        # SHOW TABLE
-        # ==========================================
-
-        st.dataframe(
-            timeline_df,
-            use_container_width=False,
-            hide_index=True,
-            height=min(
-                35 * (len(timeline_df) + 1),
-                400
-            )
-        )
-
-        # ==========================================
-        # PERFORMANCE SUMMARY
-        # ==========================================
-
-        st.markdown("### 📊 Performance Summary")
-
-        # ==========================================
-        # TOTAL INVESTED
-        # ==========================================
-        total_invested = (
-            timeline_df["Invested ₹"]
-            .sum()
-        )
-
-        # ==========================================
-        # FUND VALUE
-        # ==========================================
-        fund_total_value = (
-            timeline_df["Fund Value ₹"]
-            .sum()
-        )
-
-        # ==========================================
-        # CREATE COLUMNS
-        # 2 fixed cards + benchmark cards
-        # ==========================================
-        num_cols = 2 + len(selected_benchmarks)
-
-        summary_cols = st.columns(num_cols)
-
-        # ==========================================
-        # CARD 1 : TOTAL INVESTED
-        # ==========================================
-        summary_cols[0].metric(
-            "Total Invested",
-            f"₹{total_invested:,.2f}"
-        )
-
-        # ==========================================
-        # CARD 2 : FUND VALUE
-        # ==========================================
-        summary_cols[1].metric(
-            "Fund Portfolio Value",
-            f"₹{fund_total_value:,.2f}"
-        )
-
-        # ==========================================
-        # BENCHMARK CARDS
-        # ==========================================
-        for idx, bm_name in enumerate(selected_benchmarks):
-
-            bm_col = f"{bm_name} ₹"
-
-            if bm_col not in timeline_df.columns:
+            if fund_data.empty:
                 continue
 
-            bm_total = (
-                timeline_df[bm_col]
-                .sum()
+            latest_nav = (
+                fund_data["Latest NAV"]
+                .iloc[0]
             )
 
-            alpha = (
-                fund_total_value
-                - bm_total
+            st.caption(
+                f"Default Benchmark: {benchmark_name}"
             )
 
-            with summary_cols[idx + 2]:
+            available_benchmarks = [
 
-                st.metric(
-                    f"{bm_name} Value",
-                    f"₹{bm_total:,.2f}"
+                "NIFTY50_TRI",
+                "NIFTY500_TRI",
+                "NIFTY_MIDCAP150_TRI",
+                "NIFTY_SMALLCAP250_TRI",
+                "NIFTY_200_TRI"
+
+            ]
+
+            selected_benchmarks = st.multiselect(
+                "Compare against benchmark(s)",
+                options=available_benchmarks,
+                default=[benchmark_name],
+                key=f"timeline_benchmarks_{fund_name}"
+            )
+
+            if selected_benchmarks is None:
+                selected_benchmarks = []
+
+            timeline_rows = []
+
+            for _, txn in fund_data.iterrows():
+
+                sip_date = parse_portfolio_date(
+                    txn["Date"]
                 )
 
-                if alpha >= 0:
+                if pd.isna(sip_date):
+                    continue
 
-                    st.success(
-                        f"Alpha ₹{alpha:,.2f}"
+                amount = float(
+                    txn["Amount"]
+                )
+
+                purchase_nav = float(
+                    txn["Purchase NAV"]
+                )
+
+                fund_units = (
+                    amount /
+                    purchase_nav
+                )
+
+                fund_current_value = (
+                    fund_units *
+                    latest_nav
+                )
+
+                row = {
+
+                    "Investment Date":
+                    sip_date.strftime(
+                        "%d-%b-%Y"
+                    ),
+
+                    "Invested ₹":
+                    round(amount, 2),
+
+                    "Fund Value ₹":
+                    round(
+                        fund_current_value,
+                        2
+                    )
+                }
+
+                for bm_name in selected_benchmarks:
+
+                    bm_file = BENCHMARK_FILES.get(
+                        bm_name
                     )
 
-                else:
+                    if not bm_file:
+                        continue
 
-                    st.error(
-                        f"Alpha ₹{alpha:,.2f}"
+                    bm_df = load_benchmark_file(
+                        bm_file
                     )
 
-        # ==========================================
-        # SIP-WISE PERFORMANCE COMPARISON
-        # ==========================================
+                    bm_rows = bm_df[
+                        bm_df["Date"] <= sip_date
+                    ]
 
-        st.markdown("### 📈 SIP-wise Performance Comparison")
+                    if bm_rows.empty:
+                        continue
 
-        chart_df = timeline_df.copy()
+                    purchase_index = float(
+                        bm_rows.iloc[-1]["Close"]
+                    )
 
-        chart_df["Investment Date"] = pd.to_datetime(
-            chart_df["Investment Date"],
-            format="%d-%b-%Y",
-            errors="coerce"
-        )
+                    latest_index = float(
+                        bm_df["Close"].iloc[-1]
+                    )
 
-        chart_df = chart_df.sort_values(
-            "Investment Date",
-            ascending=True
-        )
+                    benchmark_value = (
+                        amount
+                        * latest_index
+                        / purchase_index
+                    )
 
-        # --------------------------------------------------
-        # Create custom hover data
-        # --------------------------------------------------
+                    row[f"{bm_name} ₹"] = round(
+                        benchmark_value,
+                        2
+                    )
 
-        hover_fields = []
+                    row[f"Alpha vs {bm_name} ₹"] = round(
+                        fund_current_value
+                        - benchmark_value,
+                        2
+                    )
 
-        for bm_name in selected_benchmarks:
+                timeline_rows.append(row)
 
-            bm_col = f"{bm_name} ₹"
-
-            if bm_col in chart_df.columns:
-                hover_fields.append(bm_col)
-
-            alpha_col = f"Alpha vs {bm_name} ₹"
-
-            if alpha_col in chart_df.columns:
-                hover_fields.append(alpha_col)
-
-        # --------------------------------------------------
-        # Plot columns
-        # --------------------------------------------------
-
-        plot_columns = ["Fund Value ₹"]
-
-        for bm_name in selected_benchmarks:
-
-            bm_col = f"{bm_name} ₹"
-
-            if bm_col in chart_df.columns:
-                plot_columns.append(bm_col)
-
-        plot_columns = list(dict.fromkeys(plot_columns))
-
-        # --------------------------------------------------
-        # Figure
-        # --------------------------------------------------
-
-        fig = go.Figure()
-
-        for col in plot_columns:
-
-            customdata = chart_df[
-                hover_fields
-            ].values
-
-            hover_text = (
-                "<b>Date:</b> %{x}<br>"
-                "<b>Fund Value:</b> ₹%{customdata[0]:,.2f}<br>"
+            timeline_df = pd.DataFrame(
+                timeline_rows
             )
 
-            idx = 1
+            if timeline_df.empty:
+
+                st.info(
+                    "No timeline data available"
+                )
+
+                continue
+
+            display_cols = [
+
+                "Investment Date",
+                "Invested ₹",
+                "Fund Value ₹"
+
+            ]
 
             for bm_name in selected_benchmarks:
 
                 bm_col = f"{bm_name} ₹"
 
-                alpha_col = f"Alpha vs {bm_name} ₹"
+                alpha_col = (
+                    f"Alpha vs {bm_name} ₹"
+                )
 
-                if bm_col in chart_df.columns:
-
-                    hover_text += (
-                        f"<b>{bm_name}:</b> "
-                        f"₹%{{customdata[{idx}]:,.2f}}<br>"
+                if bm_col in timeline_df.columns:
+                    display_cols.append(
+                        bm_col
                     )
 
-                    idx += 1
-
-                if alpha_col in chart_df.columns:
-
-                    hover_text += (
-                        f"<b>Alpha vs {bm_name}:</b> "
-                        f"₹%{{customdata[{idx}]:,.2f}}<br>"
+                if alpha_col in timeline_df.columns:
+                    display_cols.append(
+                        alpha_col
                     )
 
-                    idx += 1
+            timeline_df = timeline_df[
+                display_cols
+            ]
 
-            hover_text += "<extra></extra>"
+            timeline_df["SortDate"] = pd.to_datetime(
+                timeline_df[
+                    "Investment Date"
+                ],
+                format="%d-%b-%Y",
+                errors="coerce"
+            )
+
+            timeline_df = (
+                timeline_df
+                .sort_values(
+                    "SortDate",
+                    ascending=False
+                )
+                .drop(
+                    columns=["SortDate"]
+                )
+            )
+
+            st.dataframe(
+                timeline_df,
+                use_container_width=True,
+                hide_index=True
+            )
+
+            # ==========================================
+            # COMPACT PERFORMANCE SUMMARY
+            # ==========================================
+
+            st.markdown("### 📊 Performance Summary")
+
+            total_invested = (
+                timeline_df["Invested ₹"].sum()
+            )
+
+            fund_total_value = (
+                timeline_df["Fund Value ₹"].sum()
+            )
+
+            # Create cards
+            num_cols = 2 + len(selected_benchmarks)
+
+            metric_cols = st.columns(num_cols)
+
+            # Invested
+            metric_cols[0].metric(
+                "Total Invested",
+                f"₹{total_invested:,.2f}"
+            )
+
+            # Fund Value
+            metric_cols[1].metric(
+                "Fund Value",
+                f"₹{fund_total_value:,.2f}"
+            )
+
+            # Benchmark Cards
+            for idx, bm_name in enumerate(selected_benchmarks):
+
+                bm_col = f"{bm_name} ₹"
+
+                if bm_col not in timeline_df.columns:
+                    continue
+
+                benchmark_value = (
+                    timeline_df[bm_col].sum()
+                )
+
+                alpha = (
+                    fund_total_value
+                    - benchmark_value
+                )
+
+                metric_cols[idx + 2].metric(
+                    label=bm_name,
+                    value=f"₹{benchmark_value:,.2f}",
+                    delta=f"{alpha:+,.2f}",
+                    delta_color="normal"
+                )
+
+            # ==========================================
+            # GROWTH COMPARISON CHART
+            # ==========================================
+
+            st.markdown("### 📈 Growth Comparison")
+
+            chart_df = timeline_df.copy()
+
+            chart_df["Investment Date"] = pd.to_datetime(
+                chart_df["Investment Date"],
+                format="%d-%b-%Y",
+                errors="coerce"
+            )
+
+            chart_df = chart_df.sort_values(
+                "Investment Date"
+            )
+
+            # ------------------------------------------
+            # CUMULATIVE INVESTED
+            # ------------------------------------------
+
+            chart_df["Invested"] = (
+                chart_df["Invested ₹"]
+                .cumsum()
+            )
+
+            # ------------------------------------------
+            # CUMULATIVE FUND VALUE
+            # ------------------------------------------
+
+            chart_df["Fund"] = (
+                chart_df["Fund Value ₹"]
+                .cumsum()
+            )
+
+            fig = go.Figure()
+
+            # ------------------------------------------
+            # INVESTED AMOUNT
+            # ------------------------------------------
 
             fig.add_trace(
-
                 go.Scatter(
-
                     x=chart_df["Investment Date"],
-
-                    y=chart_df[col],
-
+                    y=chart_df["Invested"],
                     mode="lines+markers",
-
-                    name=col,
-
-                    customdata=np.column_stack(
-
-                        [
-                            chart_df["Fund Value ₹"]
-                        ]
-
-                        +
-
-                        [
-                            chart_df[c]
-                            for c in hover_fields
-                        ]
-                    ),
-
-                    hovertemplate=hover_text
+                    name="Invested Amount"
                 )
             )
 
-        # --------------------------------------------------
-        # Layout
-        # --------------------------------------------------
-
-        fig.update_layout(
-
-            height=420,
-
-            hovermode="x unified",
-
-            xaxis_title="Investment Date",
-
-            yaxis_title="Value (₹)",
-
-            legend_title="",
-
-            margin=dict(
-                l=20,
-                r=20,
-                t=20,
-                b=20
-            )
-        )
-
-        st.plotly_chart(
-            fig,
-            use_container_width=True
-        )
-
-        # ==========================================
-        # SIP-WISE BAR CHART
-        # ==========================================
-
-        st.markdown(
-            "### 📊 SIP-wise Value Comparison (Bar Chart)"
-        )
-
-        bar_df = chart_df.copy()
-
-        # Convert dates to categorical labels
-        bar_df["Investment Date Label"] = (
-            bar_df["Investment Date"]
-            .dt.strftime("%d-%b-%Y")
-        )
-
-        fig_bar = go.Figure()
-
-        # Fund bars
-        fig_bar.add_trace(
-            go.Bar(
-                x=bar_df["Investment Date Label"],
-                y=bar_df["Fund Value ₹"],
-                name="Fund Value ₹"
-            )
-        )
-
-        # Benchmark bars
-        for bm_name in selected_benchmarks:
-
-            bm_col = f"{bm_name} ₹"
-
-            if bm_col in bar_df.columns:
-
-                fig_bar.add_trace(
-                    go.Bar(
-                        x=bar_df["Investment Date Label"],
-                        y=bar_df[bm_col],
-                        name=bm_col
-                    )
-                )
-
-        fig_bar.update_layout(
-
-            barmode="group",
-
-            height=500,
-
-            xaxis_title="Investment Date",
-
-            yaxis_title="Value (₹)",
-
-            legend_title="",
-
-            hovermode="x unified",
-
-            margin=dict(
-                l=20,
-                r=20,
-                t=20,
-                b=80
-            )
-        )
-
-        fig_bar.update_xaxes(
-            tickangle=-45
-        )
-
-        st.plotly_chart(
-            fig_bar,
-            use_container_width=True
-        )
-        # ==========================================
-        # ALPHA SUMMARY
-        # ==========================================
-
-        st.markdown(
-            "### 🎯 Alpha Summary"
-        )
-
-        summary_items = []
-
-        fund_total_value = (
-            timeline_df["Fund Value ₹"].sum()
-        )
-
-        for bm_name in selected_benchmarks:
-
-            bm_col = f"{bm_name} ₹"
-
-            if bm_col not in timeline_df.columns:
-                continue
-
-            benchmark_total = (
-                timeline_df[bm_col].sum()
-            )
-
-            alpha_total = (
-                fund_total_value
-                - benchmark_total
-            )
-
-            summary_items.append(
-                (
-                    f"Alpha vs {bm_name}",
-                    alpha_total
-                )
-            )
-
-        cols = st.columns(
-            max(1, len(summary_items))
-        )
-
-        for col, (label, value) in zip(
-            cols,
-            summary_items
-        ):
-
-            col.metric(
-                label,
-                f"₹{value:,.2f}"
-            )
-
-
-        # ==========================================
-        # PREPARE CUMULATIVE DATA
-        # ==========================================
-
-        cumulative_df = timeline_df.copy()
-
-        cumulative_df["Investment Date"] = pd.to_datetime(
-            cumulative_df["Investment Date"],
-            format="%d-%b-%Y",
-            errors="coerce"
-        )
-
-        cumulative_df = cumulative_df.sort_values(
-            "Investment Date",
-            ascending=True
-        )
-
-        # Fund cumulative growth
-        cumulative_df["Fund Cumulative ₹"] = (
-            cumulative_df["Fund Value ₹"]
-            .cumsum()
-        )
-
-        # Benchmark cumulative growth
-        for bm_name in selected_benchmarks:
-
-            bm_col = f"{bm_name} ₹"
-
-            if bm_col not in cumulative_df.columns:
-                continue
-
-            cumulative_df[
-                f"{bm_name} Cumulative ₹"
-            ] = (
-                cumulative_df[bm_col]
-                .cumsum()
-            )
-
-            cumulative_df[
-                f"Alpha vs {bm_name} Cumulative ₹"
-            ] = (
-                cumulative_df["Fund Cumulative ₹"]
-                -
-                cumulative_df[
-                    f"{bm_name} Cumulative ₹"
-                ]
-            )
-
-
-
-        # ==========================================
-        # CUMULATIVE PORTFOLIO GROWTH
-        # ==========================================
-
-        st.markdown("### 📊 Cumulative Portfolio Growth vs Benchmark")
-
-        cumulative_df = timeline_df.copy()
-
-        cumulative_df["Investment Date"] = pd.to_datetime(
-            cumulative_df["Investment Date"],
-            format="%d-%b-%Y",
-            errors="coerce"
-        )
-
-        cumulative_df = cumulative_df.sort_values(
-            "Investment Date",
-            ascending=True
-        )
-
-        # ------------------------------------------
-        # Fund cumulative growth
-        # ------------------------------------------
-
-        cumulative_df["Fund Cumulative ₹"] = (
-            cumulative_df["Fund Value ₹"]
-            .cumsum()
-        )
-
-        # ------------------------------------------
-        # Benchmark cumulative growth
-        # ------------------------------------------
-
-        for bm_name in selected_benchmarks:
-
-            bm_col = f"{bm_name} ₹"
-
-            if bm_col not in cumulative_df.columns:
-                continue
-
-            cumulative_df[
-                f"{bm_name} Cumulative ₹"
-            ] = (
-                cumulative_df[bm_col]
-                .cumsum()
-            )
-
-            cumulative_df[
-                f"Alpha vs {bm_name} Cumulative ₹"
-            ] = (
-                cumulative_df["Fund Cumulative ₹"]
-                -
-                cumulative_df[
-                    f"{bm_name} Cumulative ₹"
-                ]
-            )
-
-        # ------------------------------------------
-        # Cumulative Growth Chart
-        # ------------------------------------------
-
-        plot_columns = [
-            "Fund Cumulative ₹"
-        ]
-
-        for bm_name in selected_benchmarks:
-
-            col_name = (
-                f"{bm_name} Cumulative ₹"
-            )
-
-            if col_name in cumulative_df.columns:
-
-                plot_columns.append(
-                    col_name
-                )
-
-        chart_cumulative = (
-            cumulative_df
-            .set_index("Investment Date")
-        )
-
-        fig_cum = go.Figure()
-
-        for col in plot_columns:
-
-            fig_cum.add_trace(
+            # ------------------------------------------
+            # FUND VALUE
+            # ------------------------------------------
+
+            fig.add_trace(
                 go.Scatter(
-                    x=chart_cumulative.index,
-                    y=chart_cumulative[col],
+                    x=chart_df["Investment Date"],
+                    y=chart_df["Fund"],
                     mode="lines+markers",
-                    name=col,
-                    hovertemplate=
-                    "<b>Date:</b> %{x}<br>" +
-                    f"<b>{col}:</b> ₹%{{y:,.2f}}" +
-                    "<extra></extra>"
+                    name="Fund Value"
                 )
             )
 
-        fig_cum.update_layout(
-            height=350,
-            hovermode="x unified",
-            xaxis_title="Investment Date",
-            yaxis_title="Cumulative Value (₹)"
-        )
+            # ------------------------------------------
+            # ALL SELECTED BENCHMARKS
+            # ------------------------------------------
 
-        st.plotly_chart(
-            fig_cum,
-            use_container_width=True
-        )
+            for bm_name in selected_benchmarks:
 
-        # ==========================================
-        # CUMULATIVE ALPHA CHART
-        # ==========================================
+                bm_col = f"{bm_name} ₹"
 
-        st.markdown(
-            "### 📈 Cumulative Alpha Growth"
-        )
+                if bm_col not in chart_df.columns:
+                    continue
 
-        alpha_columns = []
-
-        for bm_name in selected_benchmarks:
-
-            alpha_col = (
-                f"Alpha vs {bm_name} Cumulative ₹"
-            )
-
-            if alpha_col in cumulative_df.columns:
-
-                alpha_columns.append(
-                    alpha_col
+                chart_df[f"{bm_name}_cum"] = (
+                    chart_df[bm_col]
+                    .cumsum()
                 )
 
-        if alpha_columns:
-
-            alpha_chart_df = (
-                cumulative_df
-                .set_index("Investment Date")
-            )
-
-            fig_alpha = go.Figure()
-
-            for col in alpha_columns:
-
-                fig_alpha.add_trace(
+                fig.add_trace(
                     go.Scatter(
-                        x=alpha_chart_df.index,
-                        y=alpha_chart_df[col],
+                        x=chart_df["Investment Date"],
+                        y=chart_df[f"{bm_name}_cum"],
                         mode="lines+markers",
-                        name=col,
-                        hovertemplate=
-                        "<b>Date:</b> %{x}<br>" +
-                        f"<b>{col}:</b> ₹%{{y:,.2f}}" +
-                        "<extra></extra>"
+                        name=bm_name
                     )
                 )
 
-            fig_alpha.update_layout(
-                height=350,
+            # ------------------------------------------
+            # LAYOUT
+            # ------------------------------------------
+
+            fig.update_layout(
+                height=500,
                 hovermode="x unified",
+                yaxis_title="₹ Value",
                 xaxis_title="Investment Date",
-                yaxis_title="Alpha (₹)"
+                legend_title="Series"
             )
 
             st.plotly_chart(
-                fig_alpha,
+                fig,
                 use_container_width=True
             )
-
 
 # ==========================================================
 # INDUSTRY DISTRIBUTION ANALYSIS
@@ -4080,6 +3647,83 @@ with st.expander(
                     use_container_width=True,
                     hide_index=True
                 )
+
+                # ======================================
+                # INDUSTRY STOCK BREAKDOWN
+                # ======================================
+
+                st.markdown(
+                    "### 📋 Industry-wise Stock Holdings"
+                )
+
+                all_holdings = []
+
+                for fund in overlap_funds:
+
+                    holdings = get_fund_holdings(fund)
+
+                    if holdings.empty:
+                        continue
+
+                    temp = holdings.copy()
+
+                    temp["Fund"] = fund
+
+                    all_holdings.append(temp)
+
+                if all_holdings:
+
+                    combined_holdings = pd.concat(
+                        all_holdings,
+                        ignore_index=True
+                    )
+
+                    # ======================================
+                    # SORT INDUSTRIES BY TOTAL WEIGHT
+                    # ======================================
+
+                    industry_order = (
+                        combined_holdings
+                        .groupby("Industry")["Weight"]
+                        .sum()
+                        .sort_values(ascending=False)
+                    )
+
+                    industries = industry_order.index.tolist()
+
+                    for industry in industries:
+
+                        industry_df = (
+                            combined_holdings[
+                                combined_holdings["Industry"]
+                                == industry
+                            ]
+                            .sort_values(
+                                "Weight",
+                                ascending=False
+                            )
+                        )
+
+                        industry_weight = industry_df["Weight"].sum()
+
+                        with st.expander(
+                            f"{industry} | {industry_weight:.1f}% | {len(industry_df)} Stocks"
+                        ):
+
+                            st.dataframe(
+                                industry_df[
+                                    [
+                                        "Stock",
+                                        "Weight",
+                                        "Fund"
+                                    ]
+                                ],
+                                use_container_width=True,
+                                hide_index=True
+                            )
+
+
+                
 
         # ======================================
         # COMMON STOCKS
