@@ -11,6 +11,8 @@ from bs4 import BeautifulSoup
 import io
 import plotly.express as px
 import plotly.graph_objects as go
+import pandas as pd
+import numpy as np
 
 # ==========================================================
 # PAGE CONFIG
@@ -54,6 +56,7 @@ def init_db():
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS investments (
 
+
         id BIGSERIAL PRIMARY KEY,
 
         user_id INTEGER DEFAULT 1,
@@ -63,6 +66,8 @@ def init_db():
         fund_type TEXT,
 
         fund_name TEXT,
+        
+        transaction_type TEXT DEFAULT 'BUY',
 
         amount DOUBLE PRECISION,
 
@@ -84,6 +89,12 @@ def init_db():
 
         created_at TIMESTAMP DEFAULT NOW()
     )
+    """)
+
+    cursor.execute("""
+    ALTER TABLE investments
+    ADD COLUMN IF NOT EXISTS transaction_type
+    TEXT DEFAULT 'BUY'
     """)
 
     # ==========================================
@@ -353,6 +364,7 @@ def save_investment(
     date,
     fund_type,
     fund_name,
+    transaction_type,
     amount,
     purchase_nav,
     nav_date,
@@ -360,9 +372,18 @@ def save_investment(
     units,
     current_value,
     gain_loss,
-    holding_years,
-    cagr
+    holding_years=0,
+    cagr=0
 ):
+
+    amount = float(amount)
+    purchase_nav = float(purchase_nav)
+    latest_nav = float(latest_nav)
+    units = float(units)
+    current_value = float(current_value)
+    gain_loss = float(gain_loss)
+    holding_years = float(holding_years)
+    cagr = float(cagr)
 
     conn = get_connection()
 
@@ -376,6 +397,7 @@ def save_investment(
             date,
             fund_type,
             fund_name,
+            transaction_type,
             amount,
             purchase_nav,
             nav_date,
@@ -390,10 +412,9 @@ def save_investment(
 
         VALUES (
 
-            %s, %s, %s, %s,
-            %s, %s, %s, %s,
-            %s, %s, %s, %s,
-            %s
+            %s,%s,%s,%s,%s,
+            %s,%s,%s,%s,%s,
+            %s,%s,%s,%s
         )
         """,
 
@@ -402,6 +423,7 @@ def save_investment(
             date,
             fund_type,
             fund_name,
+            transaction_type,
             amount,
             purchase_nav,
             nav_date,
@@ -524,6 +546,7 @@ def load_portfolio(user_id=1):
         date,
         fund_type,
         fund_name,
+        transaction_type,
         amount,
         purchase_nav,
         nav_date,
@@ -600,6 +623,7 @@ def load_portfolio(user_id=1):
         "Date",
         "Fund Type",
         "Fund Name",
+        "Transaction Type",
         "Amount",
         "Purchase NAV",
         "NAV Date",
@@ -747,6 +771,8 @@ def edit_investment_dialog(row):
         "Update investment details"
     )
 
+    transaction_type = row["Transaction Type"]
+
     # ==========================================
     # HANDLE MIXED DATE FORMATS
     # ==========================================
@@ -765,26 +791,35 @@ def edit_investment_dialog(row):
         ).date()
 
     # ==========================================
-    # INPUTS
+    # AMOUNT INPUT
     # ==========================================
     new_amount = st.number_input(
-        "Investment Amount (₹)",
+        "Amount (₹)",
         min_value=1.0,
-        value=float(row["Amount"]),
+        value=abs(float(row["Amount"])),
         step=100.0,
         key=f"edit_amount_{row['ID']}"
     )
 
+    # ==========================================
+    # DATE INPUT
+    # ==========================================
     new_date = st.date_input(
-        "Investment Date",
+        "Transaction Date",
         value=parsed_date,
         format="DD/MM/YYYY",
         key=f"edit_date_{row['ID']}"
     )
 
+    st.info(
+        f"Transaction Type : {transaction_type}"
+    )
 
     col1, col2 = st.columns(2)
 
+    # ==========================================
+    # CANCEL BUTTON
+    # ==========================================
     with col1:
 
         if st.button(
@@ -793,6 +828,9 @@ def edit_investment_dialog(row):
         ):
             st.rerun()
 
+    # ==========================================
+    # SAVE BUTTON
+    # ==========================================
     with col2:
 
         if st.button(
@@ -805,15 +843,14 @@ def edit_investment_dialog(row):
             # ==================================
             scheme_code = (
                 fund_df[
-                    fund_df[
-                        "Fund Name"
-                    ] == row["Fund Name"]
+                    fund_df["Fund Name"]
+                    == row["Fund Name"]
                 ]["Scheme Code"]
                 .iloc[0]
             )
 
             # ==================================
-            # RECALCULATE NAV
+            # GET NAV
             # ==================================
             purchase_nav, latest_nav, nav_date_used = (
                 get_nav_data(
@@ -835,33 +872,56 @@ def edit_investment_dialog(row):
 
                 st.stop()
 
-            if purchase_nav is None:
+            # ==================================
+            # BUY / SELL LOGIC
+            # ==================================
+            if transaction_type == "SELL":
 
-                st.error(
-                    f"No NAV available for {fund_name}"
+                db_amount = -abs(
+                    float(new_amount)
                 )
 
-                st.stop()
+                units = -(
+                    abs(
+                        float(new_amount)
+                    )
+                    / purchase_nav
+                )
 
-            units = (
-                new_amount
-                / purchase_nav
-            )
+            else:
 
+                db_amount = abs(
+                    float(new_amount)
+                )
+
+                units = (
+                    abs(
+                        float(new_amount)
+                    )
+                    / purchase_nav
+                )
+
+            # ==================================
+            # CURRENT VALUE
+            # ==================================
             current_value = (
                 units
                 * latest_nav
             )
 
+            # ==================================
+            # GAIN LOSS
+            # ==================================
             gain_loss = (
                 current_value
-                - new_amount
+                - db_amount
             )
 
             # ==================================
             # UPDATE DATABASE
             # ==================================
             conn = get_connection()
+
             cursor = conn.cursor()
 
             cursor.execute(
@@ -882,7 +942,7 @@ def edit_investment_dialog(row):
                     new_date.strftime(
                         "%d/%m/%Y"
                     ),
-                    new_amount,
+                    db_amount,
                     purchase_nav,
                     nav_date_used,
                     latest_nav,
@@ -894,11 +954,12 @@ def edit_investment_dialog(row):
             )
 
             conn.commit()
+
             cursor.close()
             conn.close()
 
             st.success(
-                "Investment updated successfully"
+                "Transaction updated successfully"
             )
 
             st.rerun()
@@ -926,12 +987,27 @@ def calculate_portfolio_xirr(df):
 
             continue
 
-        cashflows.append(
-            (
-                investment_date,
-                -float(row["Amount"])
+        if row["Transaction Type"] == "BUY":
+
+            cashflows.append(
+                (
+                    investment_date,
+                    -abs(
+                        float(row["Amount"])
+                    )
+                )
             )
-        )
+
+        else:
+
+            cashflows.append(
+                (
+                    investment_date,
+                    abs(
+                        float(row["Amount"])
+                    )
+                )
+            )
 
     # add today's portfolio value
     current_value = (
@@ -985,14 +1061,27 @@ def calculate_fund_xirr(fund_df):
                 )
             )
 
-            cashflows.append(
-                (
-                    investment_date,
-                    -float(
-                        row["Amount"]
+            if row["Transaction Type"] == "BUY":
+
+                cashflows.append(
+                    (
+                        investment_date,
+                        -abs(
+                            float(row["Amount"])
+                        )
                     )
                 )
-            )
+
+            else:
+
+                cashflows.append(
+                    (
+                        investment_date,
+                        abs(
+                            float(row["Amount"])
+                        )
+                    )
+                )
 
         except:
 
@@ -2086,6 +2175,19 @@ if not portfolio_df.empty:
         )
     )
 
+    portfolio_age_days = (
+        pd.Timestamp.today()
+        -
+        portfolio_df["Date"]
+        .apply(parse_portfolio_date)
+        .min()
+    ).days
+
+    portfolio_age_years = round(
+        portfolio_age_days / 365,
+        1
+    )
+
     # ======================================================
     # TOP METRICS
     # ======================================================
@@ -2473,8 +2575,112 @@ with col_chart2:
 
     col_a, col_b = st.columns([1,4])
 
+# ======================================================
+# REDEMPTION FORM
+# ======================================================
 
+with st.expander(
+    "➖ Redeem Mutual Fund",
+    expanded=False
+):
 
+    redeem_fund = st.selectbox(
+        "Fund",
+        sorted(
+            portfolio_df["Fund Name"].unique()
+        )
+    )
+
+    redeem_date = st.date_input(
+        "Redemption Date"
+    )
+
+    redeem_amount = st.number_input(
+        "Amount to Redeem",
+        min_value=1.0,
+        step=100.0
+    )
+
+    if st.button("Redeem Amount"):
+
+        fund_txns = portfolio_df[
+            portfolio_df["Fund Name"]
+            == redeem_fund
+        ]
+
+        total_units = float(
+            fund_txns["Units"].sum()
+        )
+
+        latest_nav = float(
+            fund_txns["Latest NAV"].iloc[0]
+        )
+
+        units_to_sell = float(
+            redeem_amount / latest_nav
+        )
+
+        if units_to_sell > total_units:
+
+            st.error(
+                f"Redemption exceeds holdings. "
+                f"Available Units = {total_units:.4f}"
+            )
+
+        else:
+
+            save_investment(
+
+                user_id=1,
+
+                date=redeem_date.strftime(
+                    "%d/%m/%Y"
+                ),
+
+                fund_type=str(
+                    fund_txns["Fund Type"].iloc[0]
+                ),
+
+                fund_name=redeem_fund,
+
+                transaction_type="SELL",
+
+                amount=float(
+                    -redeem_amount
+                ),
+
+                purchase_nav=float(
+                    latest_nav
+                ),
+
+                nav_date=redeem_date.strftime(
+                    "%d/%m/%Y"
+                ),
+
+                latest_nav=float(
+                    latest_nav
+                ),
+
+                units=float(
+                    -units_to_sell
+                ),
+
+                current_value=float(
+                    -redeem_amount
+                ),
+
+                gain_loss=0.0,
+
+                holding_years=0.0,
+
+                cagr=0.0
+            )
+
+            st.success(
+                f"₹{redeem_amount:,.2f} redeemed successfully"
+            )
+
+            st.rerun()
 
 # ======================================================
 # MUTUAL FUND TYPE SUMMARY
@@ -2549,6 +2755,880 @@ if "benchmark_mapping" not in st.session_state:
     st.session_state.benchmark_mapping = (
         load_benchmark_mapping()
     )
+
+
+# ======================================================
+# AI PORTFOLIO REVIEW
+# ======================================================
+with st.expander(
+    "🤖 AI Portfolio Review",
+    expanded=False
+):
+
+    #Portfolio Advisor
+    st.header("🧠 Portfolio Advisor")
+
+    total_funds = portfolio_df["Fund Name"].nunique()
+
+    equity_pct = round(
+        portfolio_df[
+            portfolio_df["Category"]=="Equity"
+        ]["Amount"].sum()
+        / total_invested * 100,
+        1
+    )
+
+    hybrid_pct = round(
+        portfolio_df[
+            portfolio_df["Category"]=="Hybrid"
+        ]["Amount"].sum()
+        / total_invested * 100,
+        1
+    )
+
+    debt_pct = round(
+        portfolio_df[
+            portfolio_df["Category"]=="Debt"
+        ]["Amount"].sum()
+        / total_invested * 100,
+        1
+    )
+
+    global_pct = round(
+        portfolio_df[
+            portfolio_df["Category"]=="Global"
+        ]["Amount"].sum()
+        / total_invested * 100,
+        1
+    )
+
+    # ==================================================
+    # ADVANCED PORTFOLIO HEALTH ENGINE
+    # ==================================================
+
+    effective_equity = equity_pct + (hybrid_pct * 0.65)
+
+    health_score = 100
+
+    # Equity Allocation
+    if effective_equity < 50:
+        health_score -= 20
+    elif effective_equity < 60:
+        health_score -= 10
+    elif effective_equity > 90:
+        health_score -= 10
+
+    # Debt Allocation
+    if debt_pct < 5:
+        health_score -= 10
+    elif debt_pct > 35:
+        health_score -= 5
+
+    # Global Diversification
+    if global_pct < 5:
+        health_score -= 10
+
+    # Fund Count
+    if total_funds > 10:
+        health_score -= 10
+    elif total_funds > 8:
+        health_score -= 5
+
+    # Portfolio XIRR
+    if portfolio_xirr is not None:
+
+        if portfolio_xirr < 8:
+            health_score -= 15
+
+        elif portfolio_xirr < 10:
+            health_score -= 10
+
+        elif portfolio_xirr > 14:
+            health_score += 5
+
+    # Overlap Penalty
+    try:
+
+        if overlap_score > 35:
+            health_score -= 10
+
+        elif overlap_score > 25:
+            health_score -= 5
+
+    except:
+        pass
+
+    health_score = max(
+        0,
+        min(100, health_score)
+    )
+
+    # ==================================================
+    # PORTFOLIO GRADE
+    # ==================================================
+
+    if health_score >= 90:
+        grade = "A+"
+
+    elif health_score >= 80:
+        grade = "A"
+
+    elif health_score >= 70:
+        grade = "B+"
+
+    elif health_score >= 60:
+        grade = "B"
+
+    elif health_score >= 50:
+        grade = "C+"
+
+    else:
+        grade = "C"
+
+    # ==================================================
+    # RISK PROFILE USING EFFECTIVE EQUITY
+    # ==================================================
+
+    if effective_equity >= 80:
+
+        risk_profile = "Aggressive"
+
+    elif effective_equity >= 65:
+
+        risk_profile = "Moderately Aggressive"
+
+    elif effective_equity >= 45:
+
+        risk_profile = "Moderate"
+
+    else:
+
+        risk_profile = "Conservative"
+
+    # ==================================================
+    # PORTFOLIO HEALTH SCORE
+    # ==================================================
+
+    st.markdown("---")
+    st.subheader("🏥 Portfolio Health Score")
+
+    st.progress(
+        health_score / 100
+    )
+
+    st.metric(
+        "Portfolio Health Score",
+        f"{health_score}/100"
+    )
+
+    # ==================================================
+    # ASSET ALLOCATION ADVISOR
+    # ==================================================
+
+    st.markdown("---")
+    st.subheader("⚖️ Asset Allocation Advisor")
+
+    allocation_df = pd.DataFrame({
+
+        "Asset Class": [
+            "Equity",
+            "Hybrid",
+            "Debt",
+            "Global"
+        ],
+
+        "Current %": [
+            equity_pct,
+            hybrid_pct,
+            debt_pct,
+            global_pct
+        ],
+
+        "Target %": [
+            70,
+            10,
+            10,
+            10
+        ]
+    })
+
+    allocation_df["Gap %"] = (
+        allocation_df["Target %"]
+        -
+        allocation_df["Current %"]
+    ).round(1)
+
+    st.dataframe(
+        allocation_df,
+        use_container_width=True
+    )
+
+    c1, c2, c3, c4 = st.columns(4)
+
+    c1.metric(
+        "Portfolio Grade",
+        grade
+    )
+
+    c2.metric(
+        "Health Score",
+        f"{health_score}/100"
+    )
+
+    c3.metric(
+        "Risk Profile",
+        risk_profile
+    )
+
+    c4.metric(
+        "Portfolio XIRR",
+        (
+            f"{portfolio_xirr:.2f}%"
+            if portfolio_xirr is not None
+            else "N/A"
+        )
+    )
+
+    # ==================================================
+    # PORTFOLIO DOCTOR
+    # ==================================================
+
+    st.markdown("---")
+    st.subheader("🩺 Portfolio Doctor")
+
+    # Debt Advice
+    if debt_pct < 10:
+
+        debt_advice = (
+            "Increase debt allocation to 10-15%."
+        )
+
+    elif debt_pct > 20:
+
+        debt_advice = (
+            "Debt allocation is already high. "
+            "Consider increasing equity exposure."
+        )
+
+    else:
+
+        debt_advice = (
+            "Debt allocation is balanced."
+        )
+
+    # Global Advice
+    if global_pct < 5:
+
+        global_advice = (
+            "Add 5-10% global allocation."
+        )
+
+    else:
+
+        global_advice = (
+            "Global diversification looks healthy."
+        )
+
+    # Equity Advice
+    if effective_equity < 60:
+
+        equity_advice = (
+            "Increase long-term equity exposure."
+        )
+
+    elif effective_equity > 85:
+
+        equity_advice = (
+            "Equity exposure is high. "
+            "Consider gradual rebalancing."
+        )
+
+    else:
+
+        equity_advice = (
+            "Equity allocation looks balanced."
+        )
+
+    # Portfolio XIRR Display
+    portfolio_xirr_display = (
+        f"{portfolio_xirr:.2f}"
+        if portfolio_xirr is not None
+        else "N/A"
+    )
+
+    # Doctor Report
+    doctor_report = f"""
+    Portfolio Grade: {grade}
+
+    Portfolio Health Score: {health_score}/100
+
+    Risk Profile: {risk_profile}
+
+    Portfolio XIRR: {portfolio_xirr_display}%
+
+    Current Equity Allocation: {equity_pct}%
+
+    Current Hybrid Allocation: {hybrid_pct}%
+
+    Current Debt Allocation: {debt_pct}%
+
+    Current Global Allocation: {global_pct}%
+
+    Recommended Actions:
+
+    1. Maintain strong performing funds.
+
+    2. Exit underperformers only after 12-18 months review.
+
+    3. Reduce portfolio overlap where possible.
+
+    4. {global_advice}
+
+    5. {debt_advice}
+
+    6. {equity_advice}
+
+    7. Target long-term CAGR of 11-13%.
+
+    8. Maintain 5-10% international diversification.
+
+    9. Keep fund count between 6-8.
+
+    10. Review asset allocation annually.
+    """
+
+    st.success(doctor_report)
+   
+
+#PORTFOLIO CONCENTRATION CHECK
+    st.markdown("---")
+    st.subheader("🎯 Portfolio Concentration")
+
+    fund_alloc = (
+        portfolio_df
+        .groupby("Fund Name")
+        ["Current Value"]
+        .sum()
+    )
+
+    fund_alloc_pct = (
+        fund_alloc
+        /
+        fund_alloc.sum()
+        * 100
+    ).sort_values(
+        ascending=False
+    )
+
+    top_fund = fund_alloc_pct.index[0]
+    top_pct = round(
+        fund_alloc_pct.iloc[0],
+        1
+    )
+
+    st.metric(
+        "Largest Fund Exposure",
+        f"{top_pct}%"
+    )
+
+    if top_pct > 30:
+
+        st.warning(
+            f"{top_fund} contributes "
+            f"{top_pct}% of portfolio."
+        )
+
+    else:
+
+        st.success(
+            "No concentration risk detected."
+        )
+
+    #OVERLAP SCORE
+    st.markdown("---")
+    st.subheader("🔄 Portfolio Overlap Score")
+
+    available_overlap_funds = [
+
+        f for f in
+        portfolio_df["Fund Name"].unique()
+
+        if get_fund_holdings(f).shape[0] > 0
+    ]
+
+    if len(available_overlap_funds) >= 2:
+
+        overlap_matrix = calculate_overlap_matrix(
+            available_overlap_funds
+        )
+
+        values = []
+
+        for i in range(len(overlap_matrix)):
+            for j in range(i+1,len(overlap_matrix)):
+                values.append(
+                    overlap_matrix.iloc[i,j]
+                )
+
+        overlap_score = round(
+            np.mean(values),
+            1
+        )
+
+        st.metric(
+            "Average Overlap",
+            f"{overlap_score}%"
+        )
+
+        if overlap_score > 35:
+            st.error(
+                "High overlap detected."
+            )
+
+        elif overlap_score > 20:
+            st.warning(
+                "Moderate overlap."
+            )
+
+        else:
+            st.success(
+                "Overlap under control."
+            )
+
+    #RETIREMENT PROJECTION
+    st.markdown("---")
+    st.subheader("🏖️ Retirement Projection")
+
+    current_age = 36
+
+    retirement_age = st.slider(
+        "Retirement Age",
+        45,
+        65,
+        60
+    )
+
+    years_left = (
+        retirement_age
+        -
+        current_age
+    )
+
+    expected_return = st.slider(
+        "Expected CAGR %",
+        8.0,
+        15.0,
+        12.0
+    )
+
+    future_value = (
+        total_current_value
+        *
+        (
+            1 +
+            expected_return/100
+        ) ** years_left
+    )
+
+    st.metric(
+        "Projected Corpus",
+        f"₹{future_value:,.0f}"
+    )
+
+    #SIP GOAL PLANNER
+    st.markdown("---")
+    st.subheader("🎯 Goal Planner")
+
+    goal_amount = st.number_input(
+        "Target Corpus (₹)",
+        value=10000000
+    )
+
+    goal_years = st.slider(
+        "Years",
+        1,
+        30,
+        15
+    )
+
+    expected_return = 12
+
+    monthly_rate = (
+        expected_return
+        /
+        100
+        /
+        12
+    )
+
+    months = goal_years * 12
+
+    required_sip = (
+        goal_amount
+        *
+        monthly_rate
+        /
+        (
+            (1+monthly_rate)**months
+            - 1
+        )
+    )
+
+    st.metric(
+        "Required Monthly SIP",
+        f"₹{required_sip:,.0f}"
+    )
+
+    #PORTFOLIO STRESS TEST
+    st.markdown("---")
+    st.subheader("📉 Stress Test")
+
+    crash_20 = total_current_value * 0.80
+    crash_30 = total_current_value * 0.70
+    crash_40 = total_current_value * 0.60
+
+    c1,c2,c3 = st.columns(3)
+
+    c1.metric(
+        "-20% Crash",
+        f"₹{crash_20:,.0f}"
+    )
+
+    c2.metric(
+        "-30% Crash",
+        f"₹{crash_30:,.0f}"
+    )
+
+    c3.metric(
+        "-40% Crash",
+        f"₹{crash_40:,.0f}"
+    )
+
+    #GLOBAL ALLOCATION ADVISOR
+    st.markdown("---")
+    st.subheader("🌎 Global Allocation Advisor")
+
+    if global_pct < 5:
+
+        st.warning(
+            """
+    Recommended:
+    5-10% Global Allocation
+
+    Suggested Funds:
+
+    - Motilal Oswal Nasdaq 100 FoF
+    - Navi Nasdaq 100 FoF
+    - Motilal Oswal S&P500 Index Fund
+    """
+        )
+
+    else:
+
+        st.success(
+            "Global allocation looks healthy."
+        )
+
+
+
+    # ==================================================
+    # DASHBOARD
+    # ==================================================
+
+    c1,c2,c3,c4 = st.columns(4)
+
+    c1.metric(
+        "Portfolio Grade",
+        grade
+    )
+
+    c2.metric(
+        "Health Score",
+        f"{health_score}/100"
+    )
+
+    c3.metric(
+        "Risk Profile",
+        risk_profile
+    )
+
+    c4.metric(
+        "Portfolio XIRR",
+        f"{portfolio_xirr:.2f}%"
+        if portfolio_xirr is not None
+        else "N/A"
+    )
+
+    st.markdown("---")
+
+    # ==================================================
+    # PORTFOLIO INSIGHTS
+    # ==================================================
+
+    st.subheader("📋 Portfolio Insights")
+
+    strengths = []
+    weaknesses = []
+
+    if effective_equity >= 60:
+        strengths.append(
+            f"Good growth allocation ({effective_equity:.1f}%)."
+        )
+
+    if hybrid_pct >= 20:
+        strengths.append(
+            f"Hybrid allocation ({hybrid_pct:.1f}%) provides stability."
+        )
+
+    if overlap_score < 20:
+        strengths.append(
+            "Portfolio overlap is under control."
+        )
+
+    if debt_pct < 5:
+        weaknesses.append(
+            "Debt allocation is very low."
+        )
+
+    if global_pct < 5:
+        weaknesses.append(
+            "No meaningful global diversification."
+        )
+
+    if total_funds > 10:
+        weaknesses.append(
+            "Too many funds causing unnecessary overlap."
+        )
+
+    if portfolio_xirr is not None:
+
+        if portfolio_xirr < 10:
+
+            weaknesses.append(
+                "Portfolio return below long-term expectation."
+            )
+
+    col1,col2 = st.columns(2)
+
+    with col1:
+
+        st.success("### Strengths")
+
+        for s in strengths:
+            st.write("✅", s)
+
+    with col2:
+
+        st.error("### Weaknesses")
+
+        for w in weaknesses:
+            st.write("⚠️", w)
+
+    st.markdown("---")
+
+    # ==================================================
+    # FUND LEVEL REVIEW
+    # ==================================================
+
+    st.subheader("📊 Fund-Level Review")
+
+    ALTERNATIVES = {
+
+        "BANDHAN SMALL CAP":
+            "Nippon India Small Cap Fund",
+
+        "HDFC MID":
+            "Motilal Oswal Midcap Fund",
+
+        "HDFC FLEXI":
+            "Parag Parikh Flexi Cap Fund",
+
+        "ICICI PRUDENTIAL MULTI-ASSET":
+            "Kotak Multi Asset Allocation Fund",
+
+        "KOTAK AGGRESSIVE HYBRID":
+            "ICICI Equity & Debt Fund"
+    }
+
+    for fund_name in sorted(
+        portfolio_df["Fund Name"].unique()
+    ):
+
+        fund_data = portfolio_df[
+            portfolio_df["Fund Name"] == fund_name
+        ]
+
+        invested = (
+            fund_data[
+                fund_data[
+                    "Transaction Type"
+                ] == "BUY"
+            ]["Amount"]
+            .sum()
+        )
+
+        current_value = fund_data["Current Value"].sum()
+
+        gain_loss = current_value - invested
+
+        gain_pct = (
+            gain_loss / invested * 100
+            if invested > 0 else 0
+        )
+
+        fund_xirr = calculate_fund_xirr(
+            fund_data
+        )
+
+        recommendation = "MONITOR"
+
+        reason = ""
+
+        if fund_xirr is not None:
+
+            if fund_xirr >= 12:
+
+                recommendation = "KEEP"
+
+                reason = "Strong long-term performance."
+
+            elif fund_xirr >= 8:
+
+                recommendation = "MONITOR"
+
+                reason = "Performance is acceptable."
+
+            else:
+
+                recommendation = "REVIEW"
+
+                reason = "Below expected long-term return."
+
+        alternative = "-"
+
+        for key,val in ALTERNATIVES.items():
+
+            if key in fund_name.upper():
+
+                alternative = val
+                break
+
+        if recommendation == "KEEP":
+
+            st.success(
+                f"""
+**{fund_name}**
+
+Recommendation: KEEP
+
+Current Value: ₹{current_value:,.0f}
+
+Gain/Loss: ₹{gain_loss:,.0f}
+
+XIRR: {fund_xirr:.2f}%
+
+Reason:
+{reason}
+"""
+            )
+
+        elif recommendation == "MONITOR":
+
+            st.warning(
+                f"""
+**{fund_name}**
+
+Recommendation: MONITOR
+
+Current Value: ₹{current_value:,.0f}
+
+Gain/Loss: ₹{gain_loss:,.0f}
+
+XIRR: {fund_xirr:.2f}%
+
+Reason:
+{reason}
+"""
+            )
+
+        else:
+
+            st.error(
+                f"""
+**{fund_name}**
+
+Recommendation: REVIEW
+
+Current Value: ₹{current_value:,.0f}
+
+Gain/Loss: ₹{gain_loss:,.0f}
+
+XIRR: {fund_xirr:.2f}%
+
+Reason:
+{reason}
+
+Possible Alternative:
+{alternative}
+"""
+            )
+
+    st.markdown("---")
+
+    # ==================================================
+    # ACTION CENTER
+    # ==================================================
+
+    st.subheader("🎯 Action Center")
+
+    actions = []
+
+    if global_pct < 5:
+
+        actions.append(
+            "Add 5-10% NASDAQ100 or S&P500 exposure."
+        )
+
+    if total_funds > 8:
+
+        actions.append(
+            "Reduce fund count to 6-8 funds."
+        )
+
+    if overlap_score > 25:
+
+        actions.append(
+            "Reduce overlapping funds."
+        )
+
+    if effective_equity < 60:
+
+        actions.append(
+            "Increase equity allocation gradually."
+        )
+
+    if debt_pct < 5:
+
+        actions.append(
+            "Add short duration debt exposure."
+        )
+
+    if len(actions)==0:
+
+        st.success(
+            "Portfolio looks well structured."
+        )
+
+    else:
+
+        for item in actions:
+
+            st.info(item)
+
+    st.markdown("---")
+
+
+
 
 # =====================================================
 # BENCHMARK ANALYSIS
@@ -3005,6 +4085,29 @@ with st.expander(
 
         use_container_width=True
     )
+
+    #BENCHMARK WINNER / LOSER
+    st.markdown("---")
+    st.subheader("🏆 Alpha Ranking")
+
+    alpha_df = comparison_df.copy()
+
+    alpha_df = alpha_df.dropna(
+        subset=["Excess XIRR %"]
+    )
+
+    if not alpha_df.empty:
+
+        st.dataframe(
+
+            alpha_df.sort_values(
+                "Excess XIRR %",
+                ascending=False
+            ),
+
+            use_container_width=True,
+            hide_index=True
+        )
 
 # =====================================================
 # INVESTMENT vs BENCHMARK TIMELINE
