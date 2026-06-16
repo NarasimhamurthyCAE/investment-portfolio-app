@@ -356,6 +356,7 @@ def get_latest_nav(scheme_code):
 
         return np.nan
 
+
 # ==========================================================
 # SAVE INVESTMENT
 # ==========================================================
@@ -1040,59 +1041,42 @@ def calculate_portfolio_xirr(df):
 # ==========================================================
 # FUND XIRR
 # ==========================================================
-def calculate_fund_xirr(fund_df):
+def calculate_fund_xirr(fund_data):
 
-    if fund_df.empty:
+    if fund_data.empty:
         return None
 
     cashflows = []
 
-    for _, row in (
-        fund_df
-        .iterrows()
-    ):
+    for _, row in fund_data.iterrows():
 
         try:
+            txn_date = pd.to_datetime(
+                row["Date"],
+                dayfirst=True
+            )
+        except:
+            continue
 
-            investment_date = (
-                pd.to_datetime(
-                    row["Date"],
-                    dayfirst=True
+        if row["Transaction Type"] == "BUY":
+
+            cashflows.append(
+                (
+                    txn_date,
+                    -abs(float(row["Amount"]))
                 )
             )
 
-            if row["Transaction Type"] == "BUY":
+        else:
 
-                cashflows.append(
-                    (
-                        investment_date,
-                        -abs(
-                            float(row["Amount"])
-                        )
-                    )
+            cashflows.append(
+                (
+                    txn_date,
+                    abs(float(row["Amount"]))
                 )
+            )
 
-            else:
-
-                cashflows.append(
-                    (
-                        investment_date,
-                        abs(
-                            float(row["Amount"])
-                        )
-                    )
-                )
-
-        except:
-
-            continue
-
-    current_value = (
-        fund_df[
-            "Current Value"
-        ]
-        .sum()
-    )
+    current_value = fund_data["Current Value"].sum()
 
     cashflows.append(
         (
@@ -1102,46 +1086,34 @@ def calculate_fund_xirr(fund_df):
     )
 
     try:
-
-        result = xirr(
-            cashflows
-        )
-
         return round(
-            result * 100,
+            xirr(cashflows) * 100,
             2
         )
 
     except:
-
         return None
 
+# ==========================================================
+# DATE PARSER
+# ==========================================================
+def parse_portfolio_date(date_value):
 
-def parse_portfolio_date(x):
-
-    if pd.isna(x):
+    if pd.isna(date_value):
         return pd.NaT
 
-    if isinstance(
-        x,
-        (pd.Timestamp, datetime)
-    ):
-        return pd.Timestamp(x)
-
-    x = str(x).strip()
+    date_value = str(date_value).strip()
 
     formats = [
-        "%d/%m/%Y",
-        "%d/%b/%Y",
-        "%d/%B/%Y"
+        "%d/%m/%Y",   # 01/04/2026
+        "%d/%b/%Y",   # 01/May/2026
+        "%d/%B/%Y",   # 01/May/2026 (full month)
+        "%d-%m-%Y"    # 01-04-2026
     ]
 
     for fmt in formats:
         try:
-            return pd.to_datetime(
-                x,
-                format=fmt
-            )
+            return pd.to_datetime(date_value, format=fmt)
         except:
             pass
 
@@ -2395,32 +2367,138 @@ col_chart1, col_chart2 = st.columns(2)
 # ======================================================
 # PIE CHART
 # ======================================================
+#ASSET ALLOCATION DONUT CHART
 with col_chart1:
 
-    st.subheader(
-        "Portfolio Allocation"
+    st.subheader("🏦 Asset Allocation")
+
+    asset_df = (
+        portfolio_df
+        .groupby("Category", as_index=False)
+        .agg({
+            "Current Value": "sum"
+        })
     )
 
-    fig1, ax1 = plt.subplots(
-        figsize=(4, 4)
+    asset_df.rename(
+        columns={"Current Value": "Value"},
+        inplace=True
     )
 
-    ax1.pie(
-        type_summary[
-            "Amount"
-        ],
-        labels=type_summary[
-            "Fund Type"
-        ],
-        autopct="%1.1f%%"
+    # remove negative and zero categories
+    asset_df = asset_df[
+        asset_df["Value"] > 0
+    ]
+
+    fig, ax = plt.subplots(
+        figsize=(7,7),
+        facecolor="#0E1117"
     )
 
-    ax1.axis(
-        "equal"
+    ax.set_facecolor("#0E1117")
+
+    st.write(asset_df)
+    if asset_df.empty:
+        st.warning("No positive holdings available for allocation chart.")
+        st.stop()
+
+    wedges, texts, autotexts = ax.pie(
+
+        asset_df["Value"],
+
+        labels=asset_df["Category"],
+
+        autopct="%1.1f%%",
+
+        startangle=90,
+
+        wedgeprops=dict(
+            width=0.45,
+            edgecolor="#222222"
+        ),
+
+        textprops=dict(
+            color="white",
+            fontsize=11,
+            fontweight="bold"
+        )
     )
 
-    st.pyplot(
-        fig1
+    ax.text(
+        0,
+        0,
+        "Portfolio",
+        ha="center",
+        va="center",
+        fontsize=14,
+        color="white",
+        fontweight="bold"
+    )
+
+    ax.axis("equal")
+
+    st.pyplot(fig)
+
+
+
+#FUND TYPE TREEMAP
+with col_chart2:
+
+    st.subheader("📊 Fund Type Allocation")
+
+    treemap_df = (
+        type_summary
+        .groupby("Fund Type")["Amount"]
+        .sum()
+        .reset_index()
+    )
+
+    fig = px.treemap(
+
+        treemap_df,
+
+        path=["Fund Type"],
+
+        values="Amount",
+
+        color="Amount",
+
+        color_continuous_scale="Blues"
+    )
+
+    fig.update_layout(
+
+        paper_bgcolor="#0E1117",
+
+        plot_bgcolor="#0E1117",
+
+        font=dict(
+            color="white",
+            size=14
+        ),
+
+        margin=dict(
+            t=40,
+            l=5,
+            r=5,
+            b=5
+        )
+    )
+
+    fig.update_traces(
+
+        textinfo=
+        "label+percent root",
+
+        hovertemplate=
+        "<b>%{label}</b><br>"
+        "Amount: ₹%{value:,.0f}"
+        "<extra></extra>"
+    )
+
+    st.plotly_chart(
+        fig,
+        use_container_width=True
     )
 
 # ======================================================
@@ -2628,53 +2706,7 @@ with st.expander(
             )
 
         else:
-
-            save_investment(
-
-                user_id=1,
-
-                date=redeem_date.strftime(
-                    "%d/%m/%Y"
-                ),
-
-                fund_type=str(
-                    fund_txns["Fund Type"].iloc[0]
-                ),
-
-                fund_name=redeem_fund,
-
-                transaction_type="SELL",
-
-                amount=float(
-                    -redeem_amount
-                ),
-
-                purchase_nav=float(
-                    latest_nav
-                ),
-
-                nav_date=redeem_date.strftime(
-                    "%d/%m/%Y"
-                ),
-
-                latest_nav=float(
-                    latest_nav
-                ),
-
-                units=float(
-                    -units_to_sell
-                ),
-
-                current_value=float(
-                    -redeem_amount
-                ),
-
-                gain_loss=0.0,
-
-                holding_years=0.0,
-
-                cagr=0.0
-            )
+            
 
             st.success(
                 f"₹{redeem_amount:,.2f} redeemed successfully"
@@ -3460,14 +3492,14 @@ with st.expander(
 
         invested = (
             fund_data[
-                fund_data[
-                    "Transaction Type"
-                ] == "BUY"
+                fund_data["Transaction Type"] == "BUY"
             ]["Amount"]
             .sum()
         )
 
-        current_value = fund_data["Current Value"].sum()
+        current_value = fund_data[
+            "Current Value"
+        ].sum()
 
         gain_loss = current_value - invested
 
@@ -3476,101 +3508,119 @@ with st.expander(
             if invested > 0 else 0
         )
 
+        # ----------------------------------
+        # Fund XIRR
+        # ----------------------------------
+
         fund_xirr = calculate_fund_xirr(
             fund_data
         )
 
-        recommendation = "MONITOR"
+        xirr_display = (
+            f"{fund_xirr:.2f}%"
+            if fund_xirr is not None
+            else "N/A"
+        )
 
-        reason = ""
+        # ----------------------------------
+        # Recommendation Engine
+        # ----------------------------------
+
+        recommendation = "MONITOR"
+        reason = "Insufficient history."
 
         if fund_xirr is not None:
 
             if fund_xirr >= 12:
 
                 recommendation = "KEEP"
-
                 reason = "Strong long-term performance."
 
             elif fund_xirr >= 8:
 
                 recommendation = "MONITOR"
-
                 reason = "Performance is acceptable."
 
             else:
 
                 recommendation = "REVIEW"
-
                 reason = "Below expected long-term return."
+
+        # ----------------------------------
+        # Alternative Fund
+        # ----------------------------------
 
         alternative = "-"
 
-        for key,val in ALTERNATIVES.items():
+        for key, val in ALTERNATIVES.items():
 
             if key in fund_name.upper():
 
                 alternative = val
                 break
 
+        # ----------------------------------
+        # Display Review
+        # ----------------------------------
+
         if recommendation == "KEEP":
 
             st.success(
                 f"""
-**{fund_name}**
+    **{fund_name}**
 
-Recommendation: KEEP
+    Recommendation: KEEP
 
-Current Value: ₹{current_value:,.0f}
+    Current Value: ₹{current_value:,.0f}
 
-Gain/Loss: ₹{gain_loss:,.0f}
+    Gain/Loss: ₹{gain_loss:,.0f}
 
-XIRR: {fund_xirr:.2f}%
+    XIRR: {xirr_display}
 
-Reason:
-{reason}
-"""
+    Reason:
+    {reason}
+    """
             )
 
         elif recommendation == "MONITOR":
 
             st.warning(
                 f"""
-**{fund_name}**
+    **{fund_name}**
 
-Recommendation: MONITOR
+    Recommendation: MONITOR
 
-Current Value: ₹{current_value:,.0f}
+    Current Value: ₹{current_value:,.0f}
 
-Gain/Loss: ₹{gain_loss:,.0f}
+    Gain/Loss: ₹{gain_loss:,.0f}
 
-XIRR: {fund_xirr:.2f}%
+    XIRR: {xirr_display}
 
-Reason:
-{reason}
-"""
+    Reason:
+    {reason}
+    """
             )
 
         else:
 
             st.error(
                 f"""
-**{fund_name}**
+    **{fund_name}**
 
-Recommendation: REVIEW
+    Recommendation: REVIEW
 
-Current Value: ₹{current_value:,.0f}
+    Current Value: ₹{current_value:,.0f}
 
-Gain/Loss: ₹{gain_loss:,.0f}
+    Gain/Loss: ₹{gain_loss:,.0f}
 
-XIRR: {fund_xirr:.2f}%
+    XIRR: {xirr_display}
 
-Reason:
-{reason}
+    Reason:
+    {reason}
 
-Possible Alternative:
-{alternative}
-"""
+    Possible Alternative:
+    {alternative}
+    """
             )
 
     st.markdown("---")
@@ -5215,11 +5265,10 @@ CATEGORY_TYPES = {
 
 
 # ==========================================================
-# INPUT SECTION
+# ADD MUTUAL FUND INVESTMENT
 # ==========================================================
-st.subheader(
-    "Add Mutual Fund Investment"
-)
+
+st.subheader("Add Mutual Fund Investment")
 
 col1, col2, col3, col4, col5 = st.columns(5)
 
@@ -5234,12 +5283,9 @@ fund_category = col2.selectbox(
     list(CATEGORY_TYPES.keys())
 )
 
-
 mf_type = col3.selectbox(
     "Mutual Fund Type",
-    CATEGORY_TYPES[
-        fund_category
-    ]
+    CATEGORY_TYPES[fund_category]
 )
 
 selected_fund = col4.selectbox(
@@ -5251,74 +5297,69 @@ selected_fund = col4.selectbox(
 
 investment_amount = col5.number_input(
     "Investment Amount (₹)",
-    min_value=100,
-    step=100
+    min_value=100.0,
+    step=100.0
 )
 
-if st.button("Add Investment"):
+if st.button(
+    "Add Investment",
+    key="add_investment_btn",
+    use_container_width=False
+):
 
     try:
 
-        if not selected_fund:
-
-            st.error(
-                "Please select a mutual fund."
-            )
+        # ----------------------------------------
+        # Validation
+        # ----------------------------------------
+        if selected_fund is None:
+            st.error("Please select a Mutual Fund")
             st.stop()
 
-        scheme_match = fund_df[
-            fund_df["Fund Name"]
-            == selected_fund
-        ]
-
-        if scheme_match.empty:
-
-            st.error(
-                f"Fund not found: {selected_fund}"
-            )
+        if investment_amount <= 0:
+            st.error("Investment amount must be greater than zero")
             st.stop()
 
+        # ----------------------------------------
+        # Scheme Code
+        # ----------------------------------------
         scheme_code = (
-            scheme_match[
-                "Scheme Code"
-            ].iloc[0]
+            fund_df[
+                fund_df["Fund Name"] == selected_fund
+            ]["Scheme Code"]
+            .iloc[0]
         )
 
-        fund_name = selected_fund
-
-        invest_date_str = (
-            investment_date.strftime(
-                "%d/%m/%Y"
-            )
-        )
-
-        (
-            purchase_nav,
-            latest_nav,
-            nav_date_used
-        ) = get_nav_data(
+        # ----------------------------------------
+        # NAV DATA
+        # ----------------------------------------
+        purchase_nav, latest_nav, nav_date_used = get_nav_data(
             scheme_code,
-            invest_date_str
+            investment_date.strftime("%d/%m/%Y")
         )
 
-        units = (
-             investment_amount
-            / purchase_nav
-        )
+        if purchase_nav is None:
+            st.error(
+                f"NAV not found for {selected_fund}"
+            )
+            st.stop()
+
+        # ----------------------------------------
+        # CALCULATIONS
+        # ----------------------------------------
+        units = float(investment_amount) / float(purchase_nav)
 
         current_value = (
-            units
-            * latest_nav
+            units * float(latest_nav)
         )
 
         gain_loss = (
-            current_value
-            - investment_amount
+            current_value - float(investment_amount)
         )
 
         holding_years = (
             (
-                date.today()
+                datetime.today().date()
                 - investment_date
             ).days
             / 365.25
@@ -5329,72 +5370,36 @@ if st.button("Add Investment"):
             cagr = (
                 (
                     current_value
-                    / investment_amount
-                )
-                ** (
-                    1 / holding_years
-                )
+                    / float(investment_amount)
+                ) ** (1 / holding_years)
                 - 1
             ) * 100
 
         else:
+            cagr = 0.0
 
-            cagr = 0
-
+        # ----------------------------------------
+        # SAVE TO DATABASE
+        # ----------------------------------------
         save_investment(
-
             user_id=1,
-
-            date=investment_date.strftime(
-                "%d/%m/%Y"
-            ),
-
+            date=investment_date.strftime("%d/%m/%Y"),
             fund_type=mf_type,
-
-            fund_name=fund_name,
-
-            amount=investment_amount,
-
-            purchase_nav=round(
-                purchase_nav,
-                2
-            ),
-
+            fund_name=selected_fund,
+            transaction_type="BUY",
+            amount=float(investment_amount),
+            purchase_nav=float(purchase_nav),
             nav_date=nav_date_used,
-
-            latest_nav=round(
-                latest_nav,
-                2
-            ),
-
-            units=round(
-                units,
-                4
-            ),
-
-            current_value=round(
-                current_value,
-                2
-            ),
-
-            gain_loss=round(
-                gain_loss,
-                2
-            ),
-
-            holding_years=round(
-                holding_years,
-                2
-            ),
-
-            cagr=round(
-                cagr,
-                2
-            )
+            latest_nav=float(latest_nav),
+            units=float(units),
+            current_value=float(current_value),
+            gain_loss=float(gain_loss),
+            holding_years=float(holding_years),
+            cagr=float(cagr)
         )
 
         st.success(
-            "Investment added successfully"
+            f"₹{investment_amount:,.2f} invested successfully in {selected_fund}"
         )
 
         st.rerun()
@@ -5402,5 +5407,9 @@ if st.button("Add Investment"):
     except Exception as e:
 
         st.error(
-            f"Error: {e}"
+            f"Investment save failed: {str(e)}"
         )
+
+        import traceback
+
+        st.code(traceback.format_exc())
